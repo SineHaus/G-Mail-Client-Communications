@@ -11,19 +11,47 @@ export const maxDuration = 300;
 
 export async function GET(req: NextRequest) {
   const url = req.nextUrl;
-  const [expectedState, mode] = (req.cookies.get("oauth_state")?.value ?? "").split(".");
-  const session = await verifySessionValue(req.cookies.get(SESSION_COOKIE)?.value);
+  const state = url.searchParams.get("state") ?? "";
+  const code = url.searchParams.get("code");
+  // Each sign-in attempt has its own cookie, keyed by its state value (CSRF protection).
+  const stateCookie = /^[0-9a-f-]{36}$/.test(state) ? `oauth_state_${state}` : "";
+  const mode = stateCookie ? req.cookies.get(stateCookie)?.value : undefined;
+  const session = await verifySessionValue(req.cookies.get(SESSION_COOKIE)?.value).catch(() => null);
   const fail = (msg: string) => {
+    console.warn("Sign-in failed:", msg, "| host:", url.host);
     const dest = mode === "add" && session ? `/settings?error=${encodeURIComponent(msg)}` : `/login?error=${encodeURIComponent(msg)}`;
-    return NextResponse.redirect(new URL(dest, env.appUrl()));
+    const res = NextResponse.redirect(new URL(dest, env.appUrl()));
+    if (stateCookie) res.cookies.set(stateCookie, "", { path: "/api/auth", maxAge: 0 });
+    return res;
   };
 
-  if (url.searchParams.get("error")) return fail(url.searchParams.get("error")!);
-  const code = url.searchParams.get("code");
-  const state = url.searchParams.get("state");
-  if (!code || !state || state !== expectedState) return fail("Sign-in expired, please try again.");
+  const googleError = url.searchParams.get("error");
+  if (googleError) {
+    return fail(googleError === "access_denied" ? "Sign-in was cancelled, or Google blocked this account. Please try again." : `Google returned: ${googleError}`);
+  }
+  if (!code || !state) return fail("Google didn't send back a sign-in code. Please try again.");
+  if (!mode) {
+    return fail(
+      `This sign-in couldn't be matched to one started here (it took over 30 minutes, cookies are blocked, or it was started from a different address). Open ${env.appUrl()}/login and try again.`,
+    );
+  }
   if (mode === "add" && !session) return fail("Please sign in first.");
 
+  try {
+    return await finishSignIn(req, code, mode, fail, stateCookie);
+  } catch (e) {
+    console.error("Sign-in callback error", e);
+    return fail(`Sign-in failed: ${e instanceof Error ? e.message.slice(0, 300) : String(e)}`);
+  }
+}
+
+async function finishSignIn(
+  req: NextRequest,
+  code: string,
+  mode: string,
+  fail: (msg: string) => NextResponse,
+  stateCookie: string,
+) {
   const { tokens, email, scopesOk } = await exchangeCode(code);
   if (!scopesOk) {
     return fail(
@@ -61,6 +89,6 @@ export async function GET(req: NextRequest) {
   if (mode !== "add") res.cookies.set(SESSION_COOKIE, await createSessionValue(email), sessionCookieOptions);
   // Switch to the account just connected.
   res.cookies.set(ACCOUNT_COOKIE, accountId, accountCookieOptions);
-  res.cookies.delete("oauth_state");
+  res.cookies.set(stateCookie, "", { path: "/api/auth", maxAge: 0 });
   return res;
 }

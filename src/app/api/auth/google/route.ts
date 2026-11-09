@@ -22,12 +22,14 @@ export async function GET(req: NextRequest) {
   const state = crypto.randomUUID();
   const hint = req.nextUrl.searchParams.get("hint") ?? undefined;
   const res = NextResponse.redirect(googleAuthUrl(state, hint));
-  res.cookies.set("oauth_state", `${state}.${mode}`, {
+  // One cookie per attempt, so finishing an older Google tab still works, and 30 minutes to finish
+  // (Google's consent + "unverified app" screens can take a while).
+  res.cookies.set(`oauth_state_${state}`, mode, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-    path: "/",
-    maxAge: 600,
+    path: "/api/auth",
+    maxAge: 1800,
   });
   return res;
 }
