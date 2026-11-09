@@ -6,6 +6,7 @@ import { draftForEmailAction } from "@/app/actions";
 import type { Email, Project } from "@/lib/types";
 import { fmtDate } from "@/lib/format";
 import Expandable from "./Expandable";
+import ReadToggle from "./ReadToggle";
 
 type Row = Email & { projects?: Pick<Project, "id" | "project_name" | "project_number"> | null };
 
@@ -43,7 +44,8 @@ export default function EmailHistory({
                   #{m.projects.project_number} {m.projects.project_name}
                 </Link>
               )}
-              <span className="ml-auto flex gap-2">
+              <span className="ml-auto flex items-center gap-3">
+                {m.direction === "inbound" && <ReadToggle emailId={m.id} isRead={m.is_read} />}
                 {draftId ? (
                   <Link href={`/review/${draftId}`} className="font-medium text-brand-700 hover:underline">Review draft →</Link>
                 ) : (

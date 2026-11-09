@@ -11,6 +11,15 @@ Claude drafts a reply to every new client email in Leonel's voice. **Nothing is 
 
 Drafts live only in this app's database, never in Gmail Drafts. Only the Accept button sends mail (`src/lib/send.ts` is the single code path that calls Gmail's send API).
 
+### Gmail safety: the dashboard never changes your inbox
+
+- **Scopes:** only `gmail.readonly` and `gmail.send`. No `gmail.modify`, no full mail access, and no `include_granted_scopes`, so older, broader grants are never inherited. If Google's token reports any other scope, sign-in is refused.
+- **Allowlist:** every Gmail request goes through `src/lib/google.ts`, which checks it against `src/lib/gmail-policy.ts` before sending. Only these calls are allowed: `getProfile`, `messages.list`, `messages.get`, `history.list` (all read-only), `watch` (push notifications) and `messages.send`. Anything else throws, including `messages.modify`, `batchModify`, `threads.modify`, trash, delete, labels and drafts.
+- **No label changes:** the app never adds or removes labels, so Gmail's UNREAD flag, archiving and the rest of your inbox stay exactly as they are.
+- **Read/unread lives in Supabase only** (`emails.is_read`). Opening an email in the Review view, accepting or declining marks it read in the dashboard; "Mark read/unread" toggles it there.
+- **Replies** go out with `messages.send` using the original `threadId` plus `In-Reply-To`/`References`, so they land in the same conversation. Gmail itself puts sent mail in Sent, as it does for any email you send.
+- **Enforced by tests:** `npm test` fails if any file contains label-modifying Gmail code, if the scopes change, or if any file other than `lib/google.ts` calls the Gmail API.
+
 ## Stack
 
 Next.js 16 (App Router) + Tailwind CSS 4 · Supabase Postgres · Gmail API (Google OAuth, Pub/Sub push) · Anthropic API (Claude) · Vercel.
@@ -22,7 +31,8 @@ src/
   app/api/gmail/webhook Pub/Sub push endpoint → incremental sync → drafts
   app/api/cron/renew-watch  daily: renew Gmail watch + catch-up sync
   app/actions.ts        server actions (accept, decline, revise, link project, …)
-  lib/google.ts         OAuth + Gmail REST calls
+  lib/google.ts         OAuth + Gmail REST calls (the only file that talks to Gmail)
+  lib/gmail-policy.ts   allowed scopes + allowlist of Gmail calls (read-only + send)
   lib/ingest.ts         Gmail → emails/clients; picks which emails get drafts
   lib/claude.ts         drafting + revision prompts (drafting rules live here)
   lib/send.ts           Accept → send reply in the same Gmail thread
@@ -47,7 +57,7 @@ You'll create four accounts/projects: Google Cloud, Supabase, Anthropic, Vercel.
 3. **Audience**:
    - If Leonel's email is a **Google Workspace** address (e.g. `leonel@eventrentalguys.com` on Google Workspace): choose **Internal**. Done — no verification needed.
    - If it's a regular **@gmail.com** address: choose **External**, add Leonel's address under **Test users**, then go back to **Audience** and click **Publish app** (status *In production*). Google will show an "unverified app" warning at sign-in — click **Advanced → Go to ERG Client Dashboard**. This is fine for a single private user. *(If you leave it in "Testing", Google expires the Gmail permission every 7 days and Leonel has to sign in again.)*
-4. **Data access → Add or remove scopes**: add `.../auth/gmail.readonly` and `.../auth/gmail.send` (plus `openid`, `email`, `profile`). Save.
+4. **Data access → Add or remove scopes**: add only `.../auth/gmail.readonly` and `.../auth/gmail.send`. Save. Do **not** add `gmail.modify` or `https://mail.google.com/`.
 
 ### 3. OAuth client credentials
 
@@ -105,6 +115,6 @@ Deploy: push this folder to a GitHub repo, import it at <https://vercel.com/new>
 ```bash
 npm run dev     # local dev server
 npm run build   # production build
-npm test        # unit tests for email parsing / reply building
+npm test        # unit tests: email parsing/reply building + Gmail safety policy
 npm run lint
 ```

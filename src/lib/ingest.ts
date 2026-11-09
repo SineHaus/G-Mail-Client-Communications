@@ -89,6 +89,8 @@ export async function ingestMessage(msg: GmailMessage, myEmail: string): Promise
     body: stripQuoted(extractBody(msg)),
     snippet: msg.snippet ?? null,
     sent_at: sentAt,
+    // Read/unread is tracked only in Supabase. Gmail's UNREAD label is never read from or written to.
+    is_read: direction === "outbound",
   };
   const ins = await db().from("emails").insert(row).select("id").single();
   if (ins.error) {

@@ -8,6 +8,7 @@ import DraftActions from "@/components/DraftActions";
 import ProjectSuggestion from "@/components/ProjectSuggestion";
 import SearchBox from "@/components/SearchBox";
 import SyncButton from "@/components/SyncButton";
+import ReadToggle from "@/components/ReadToggle";
 
 export const dynamic = "force-dynamic";
 
@@ -97,7 +98,7 @@ export default async function QueuePage({ searchParams }: PageProps<"/">) {
           const to = e.from_address ?? c?.email ?? "";
           const open = r.status === "pending" || r.status === "revised";
           return (
-            <li key={r.id} className="card overflow-hidden">
+            <li key={r.id} className={`card overflow-hidden ${!e.is_read && open ? "ring-2 ring-brand-100" : ""}`}>
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-stone-100 px-4 py-3">
                 <Link href={c ? `/clients/${c.id}` : "#"} className="font-semibold hover:underline">
                   {c?.name || e.from_name || to}
@@ -112,7 +113,10 @@ export default async function QueuePage({ searchParams }: PageProps<"/">) {
                   </Link>
                 )}
                 {r.status === "revised" && <span className="rounded-full bg-sky-50 px-2 py-0.5 text-xs text-sky-700">edited</span>}
-                <span className="ml-auto text-xs text-stone-400">received {timeAgo(e.sent_at)}</span>
+                <span className="ml-auto flex items-center gap-3 text-xs text-stone-400">
+                  <ReadToggle emailId={e.id} isRead={e.is_read} />
+                  received {timeAgo(e.sent_at)}
+                </span>
               </div>
               <div className="grid gap-0 md:grid-cols-2">
                 <div className="border-stone-100 p-4 md:border-r">

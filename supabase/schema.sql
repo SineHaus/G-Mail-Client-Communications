@@ -54,8 +54,13 @@ create table if not exists emails (
   body               text,             -- plain text, quoted history stripped
   snippet            text,
   sent_at            timestamptz not null,
+  is_read            boolean not null default false, -- read/unread lives ONLY here, never in Gmail
   created_at         timestamptz not null default now()
 );
+-- For databases created before is_read existed (safe to re-run):
+alter table emails add column if not exists is_read boolean not null default false;
+update emails set is_read = true where direction = 'outbound' and is_read = false;
+create index if not exists emails_unread_idx on emails(is_read) where is_read = false;
 create index if not exists emails_client_idx  on emails(client_id, sent_at desc);
 create index if not exists emails_thread_idx  on emails(gmail_thread_id, sent_at);
 create index if not exists emails_project_idx on emails(project_id, sent_at);

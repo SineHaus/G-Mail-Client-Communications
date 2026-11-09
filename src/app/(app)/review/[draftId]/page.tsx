@@ -7,6 +7,8 @@ import Expandable from "@/components/Expandable";
 import DraftEditor from "@/components/DraftEditor";
 import ProjectLinker from "@/components/ProjectLinker";
 import ProjectSuggestion from "@/components/ProjectSuggestion";
+import MarkReadOnOpen from "@/components/MarkReadOnOpen";
+import ReadToggle from "@/components/ReadToggle";
 
 export const dynamic = "force-dynamic";
 
@@ -31,6 +33,7 @@ export default async function ReviewPage({ params }: PageProps<"/review/[draftId
 
   return (
     <div className="mx-auto max-w-7xl">
+      <MarkReadOnOpen emailId={email.id} isRead={email.is_read} />
       <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
         <Link href="/" className="text-stone-500 hover:text-stone-800">← Review Queue</Link>
         <span className="text-stone-300">/</span>
@@ -83,6 +86,11 @@ export default async function ReviewPage({ params }: PageProps<"/review/[draftId
                   </span>
                   <span className="text-stone-400">{fmtDate(m.sent_at)}</span>
                   {m.id === email.id && <span className="font-medium text-brand-700">replying to this</span>}
+                  {m.direction === "inbound" && (
+                    <span className="ml-auto">
+                      <ReadToggle emailId={m.id} isRead={m.is_read} />
+                    </span>
+                  )}
                 </div>
                 <Expandable text={m.body ?? m.snippet ?? ""} lines={m.id === email.id ? 30 : 5} className="text-stone-700" />
               </article>

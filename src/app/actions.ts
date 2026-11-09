@@ -35,14 +35,15 @@ export async function acceptDraftAction(draftId: string, body?: string) {
 
 export async function declineDraftAction(draftId: string) {
   const r = await run(async () => {
-    must(
+    const rows = must(
       await db()
         .from("drafts")
         .update({ status: "declined", updated_at: now() })
         .eq("id", draftId)
         .in("status", ["pending", "revised"])
-        .select("id"),
-    );
+        .select("email_id"),
+    ) as { email_id: string }[];
+    if (rows[0]) await db().from("emails").update({ is_read: true }).eq("id", rows[0].email_id);
   });
   revalidatePath("/", "layout");
   return r;
@@ -88,6 +89,16 @@ export async function draftForEmailAction(emailId: string) {
       await db().from("drafts").select("id").eq("email_id", emailId).in("status", ["pending", "revised"]).limit(1),
     ) as { id: string }[];
     return d[0]?.id;
+  });
+  revalidatePath("/", "layout");
+  return r;
+}
+
+// ---------- Read / unread (Supabase only — Gmail labels are never changed) ----------
+
+export async function setEmailReadAction(emailId: string, isRead: boolean) {
+  const r = await run(async () => {
+    must(await db().from("emails").update({ is_read: isRead }).eq("id", emailId).select("id"));
   });
   revalidatePath("/", "layout");
   return r;

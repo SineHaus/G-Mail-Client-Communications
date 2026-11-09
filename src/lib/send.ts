@@ -5,8 +5,9 @@ import { buildReplyRaw, header, parseAddressList } from "./email-parse";
 import { ingestMessage } from "./ingest";
 
 /**
- * Accept: send the draft through Gmail as a reply in the same thread.
- * This is the ONLY code path that sends email.
+ * Accept: send the draft through Gmail (users.messages.send) as a reply in the same thread
+ * (threadId + In-Reply-To/References). This is the ONLY code path that sends email, and sending
+ * is the only change this app ever makes to the Gmail account — no labels are touched.
  */
 export async function acceptDraft(draftId: string, finalBody?: string) {
   const draft = must(await db().from("drafts").select("*").eq("id", draftId).single()) as {
@@ -52,6 +53,7 @@ export async function acceptDraft(draftId: string, finalBody?: string) {
     });
     const sent = await Gmail.send(raw, email.gmail_thread_id);
     await db().from("drafts").update({ sent_gmail_message_id: sent.id }).eq("id", draftId);
+    await db().from("emails").update({ is_read: true }).eq("id", draft.email_id); // dashboard-only read state
 
     // Store the sent message right away so it appears in the client's history.
     try {

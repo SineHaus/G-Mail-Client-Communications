@@ -32,6 +32,7 @@ export interface Email {
   body: string | null;
   snippet: string | null;
   sent_at: string;
+  is_read: boolean;
 }
 export interface Draft {
   id: string;

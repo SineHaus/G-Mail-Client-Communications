@@ -18,8 +18,13 @@ export async function GET(req: NextRequest) {
   const state = url.searchParams.get("state");
   if (!code || !state || state !== req.cookies.get("oauth_state")?.value) return fail("Sign-in expired, please try again.");
 
-  const { tokens, email, emailVerified } = await exchangeCode(code);
-  if (!emailVerified || !env.allowedEmails().includes(email)) return fail(`${email} is not allowed to use this dashboard.`);
+  const { tokens, email, scopesOk } = await exchangeCode(code);
+  if (!env.allowedEmails().includes(email)) return fail(`${email} is not allowed to use this dashboard.`);
+  if (!scopesOk) {
+    return fail(
+      "Google granted different permissions than read + send. Remove the app at myaccount.google.com/permissions and sign in again, allowing both.",
+    );
+  }
 
   const existing = await db().from("gmail_account").select("email,history_id").eq("id", 1).maybeSingle();
   const isNew = !existing.data || existing.data.email !== email;

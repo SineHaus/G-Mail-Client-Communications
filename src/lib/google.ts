@@ -2,14 +2,7 @@ import "server-only";
 import { db, must } from "./db";
 import { env } from "./env";
 import type { GmailMessage } from "./email-parse";
-
-const SCOPES = [
-  "openid",
-  "email",
-  "profile",
-  "https://www.googleapis.com/auth/gmail.readonly",
-  "https://www.googleapis.com/auth/gmail.send",
-];
+import { assertAllowedGmailCall, GMAIL_SCOPES, grantedScopesAreSafe } from "./gmail-policy";
 
 export const redirectUri = () => `${env.appUrl()}/api/auth/callback`;
 
@@ -18,10 +11,10 @@ export function googleAuthUrl(state: string): string {
     client_id: env.googleClientId(),
     redirect_uri: redirectUri(),
     response_type: "code",
-    scope: SCOPES.join(" "),
+    scope: GMAIL_SCOPES.join(" "), // gmail.readonly + gmail.send only — no modify, no full mail access
     access_type: "offline",
     prompt: "consent", // always return a refresh token
-    include_granted_scopes: "true",
+    // No include_granted_scopes: the token must not inherit broader scopes granted to this app earlier.
     state,
   });
   return `https://accounts.google.com/o/oauth2/v2/auth?${p}`;
@@ -50,10 +43,15 @@ async function tokenRequest(body: Record<string, string>): Promise<TokenResponse
 
 export async function exchangeCode(code: string) {
   const tokens = await tokenRequest({ code, grant_type: "authorization_code", redirect_uri: redirectUri() });
-  const info = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+  // Identify the account with the read-only Gmail profile call (no openid/email/profile scopes needed).
+  assertAllowedGmailCall("GET", "profile");
+  const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {
     headers: { Authorization: `Bearer ${tokens.access_token}` },
-  }).then((r) => r.json() as Promise<{ email: string; email_verified?: boolean }>);
-  return { tokens, email: info.email.toLowerCase(), emailVerified: info.email_verified !== false };
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Gmail profile error ${res.status}: ${await res.text()}`);
+  const profile = (await res.json()) as { emailAddress: string };
+  return { tokens, email: profile.emailAddress.toLowerCase(), scopesOk: grantedScopesAreSafe(tokens.scope) };
 }
 
 let cached: { token: string; expiresAt: number } | null = null;
@@ -84,6 +82,8 @@ export function clearTokenCache() {
 }
 
 async function gmail<T>(path: string, init?: RequestInit): Promise<T> {
+  // Hard guard: refuse anything that isn't on the read-only + send allowlist (see gmail-policy.ts).
+  assertAllowedGmailCall(init?.method ?? "GET", path);
   const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, {
     ...init,
     headers: { Authorization: `Bearer ${await accessToken()}`, "Content-Type": "application/json", ...init?.headers },
@@ -141,12 +141,14 @@ export const Gmail = {
     return { ids: [...ids], historyId: latest };
   },
 
+  /** The only mailbox write: send an approved reply into its existing thread. */
   send: (raw: string, threadId: string) =>
     gmail<{ id: string; threadId: string }>("messages/send", {
       method: "POST",
       body: JSON.stringify({ raw, threadId }),
     }),
 
+  /** Push notifications. labelIds here only filters which changes notify us; it changes no labels. */
   watch: (topicName: string) =>
     gmail<{ historyId: string; expiration: string }>("watch", {
       method: "POST",
