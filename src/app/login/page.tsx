@@ -1,5 +1,10 @@
+import { missingEnv } from "@/lib/env";
+
+export const dynamic = "force-dynamic";
+
 export default async function LoginPage({ searchParams }: PageProps<"/login">) {
   const { error } = await searchParams;
+  const missing = missingEnv();
   return (
     <main className="flex min-h-screen items-center justify-center p-4">
       <div className="card w-full max-w-sm p-8 text-center">
@@ -8,6 +13,15 @@ export default async function LoginPage({ searchParams }: PageProps<"/login">) {
         </div>
         <h1 className="text-xl font-semibold">Client Communications</h1>
         <p className="mt-1 text-sm text-stone-500">The Event Rental Guys</p>
+        {missing.length > 0 && (
+          <div className="mt-4 rounded-lg bg-amber-50 p-3 text-left text-sm text-amber-900">
+            <p className="font-medium">Setup incomplete: the server is missing these settings</p>
+            <ul className="mt-1 list-disc pl-5 font-mono text-xs">
+              {missing.map((m) => <li key={m}>{m}</li>)}
+            </ul>
+            <p className="mt-2 text-xs">Add them in Vercel → Settings → Environment Variables (tick Production), then redeploy.</p>
+          </div>
+        )}
         {error && <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{String(error)}</p>}
         <a href="/api/auth/google" className="btn-secondary mt-6 w-full py-2.5">
           <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden>

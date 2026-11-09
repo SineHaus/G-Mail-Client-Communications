@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { googleAuthUrl } from "@/lib/google";
+import { missingEnv } from "@/lib/env";
 import { SESSION_COOKIE, verifySessionValue } from "@/lib/session";
 
 /**
@@ -9,6 +10,11 @@ import { SESSION_COOKIE, verifySessionValue } from "@/lib/session";
  * Same scopes either way: gmail.readonly + gmail.send.
  */
 export async function GET(req: NextRequest) {
+  // Fail with a readable message instead of a blank 500 when setup is incomplete.
+  const missing = missingEnv();
+  if (missing.length) {
+    return NextResponse.redirect(new URL(`/login?error=${encodeURIComponent(`Server setup incomplete. Missing: ${missing.join(", ")}`)}`, req.url));
+  }
   const mode = req.nextUrl.searchParams.get("mode") === "add" ? "add" : "login";
   if (mode === "add" && !(await verifySessionValue(req.cookies.get(SESSION_COOKIE)?.value))) {
     return NextResponse.redirect(new URL("/login", req.url));

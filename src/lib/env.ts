@@ -6,6 +6,28 @@ function req(name: string): string {
   return v;
 }
 
+/** Variables the app can't run without. Names only — values are never shown. */
+export const REQUIRED_ENV = [
+  "APP_URL",
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "GMAIL_PUBSUB_TOPIC",
+  "GMAIL_WEBHOOK_TOKEN",
+  "SUPABASE_URL",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "ANTHROPIC_API_KEY",
+  "ALLOWED_EMAILS",
+  "SESSION_SECRET",
+  "TOKEN_ENCRYPTION_KEY",
+  "CRON_SECRET",
+] as const;
+
+export function missingEnv(): string[] {
+  const missing: string[] = REQUIRED_ENV.filter((n) => !process.env[n]?.trim());
+  if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length < 32) missing.push("SESSION_SECRET (must be 32+ characters)");
+  return missing;
+}
+
 export const env = {
   appUrl: () => (process.env.APP_URL ?? "http://localhost:3000").replace(/\/$/, ""),
   googleClientId: () => req("GOOGLE_CLIENT_ID"),
