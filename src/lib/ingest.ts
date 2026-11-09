@@ -1,8 +1,10 @@
 import "server-only";
 import { db, must } from "./db";
 import { env } from "./env";
-import { Gmail, getAccount } from "./google";
+import { gmailFor, getAccount } from "./google";
 import { extractBody, header, parseAddressList, stripQuoted, type GmailMessage } from "./email-parse";
+
+// Every function here works on ONE Gmail account and scopes every query by account_id.
 
 const SKIP_LABELS = ["DRAFT", "SPAM", "TRASH", "CHAT"];
 const BULK_LABELS = ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_UPDATES", "CATEGORY_FORUMS"];
@@ -13,32 +15,31 @@ export type IngestResult =
   | { status: "exists"; emailId: string }
   | { status: "inserted"; emailId: string; direction: "inbound" | "outbound"; threadId: string; sentAt: string };
 
-async function findOrCreateClient(email: string, name: string) {
-  const existing = must(await db().from("clients").select("id,name,ignored").eq("email", email).limit(1)) as {
-    id: string;
-    name: string | null;
-    ignored: boolean;
-  }[];
-  if (existing[0]) {
-    if (!existing[0].name && name) await db().from("clients").update({ name }).eq("id", existing[0].id);
-    return existing[0];
+type ClientRow = { id: string; name: string | null; ignored: boolean };
+
+async function findOrCreateClient(accountId: string, email: string, name: string): Promise<ClientRow> {
+  const find = async () =>
+    (must(
+      await db().from("clients").select("id,name,ignored").eq("account_id", accountId).eq("email", email).limit(1),
+    ) as ClientRow[])[0];
+  const existing = await find();
+  if (existing) {
+    if (!existing.name && name) await db().from("clients").update({ name }).eq("account_id", accountId).eq("id", existing.id);
+    return existing;
   }
   const ins = await db()
     .from("clients")
-    .upsert({ email, name: name || null }, { onConflict: "email", ignoreDuplicates: true })
+    .upsert({ account_id: accountId, email, name: name || null }, { onConflict: "account_id,email", ignoreDuplicates: true })
     .select("id,name,ignored");
-  if (ins.data?.[0]) return ins.data[0] as { id: string; name: string | null; ignored: boolean };
-  // Lost a race with a concurrent insert — read it back.
-  return (must(await db().from("clients").select("id,name,ignored").eq("email", email).limit(1)) as {
-    id: string;
-    name: string | null;
-    ignored: boolean;
-  }[])[0];
+  if (ins.data?.[0]) return ins.data[0] as ClientRow;
+  return (await find())!; // lost a race with a concurrent insert
 }
 
-/** Store one Gmail message (if it's a client conversation) and auto-create/match the client. */
-export async function ingestMessage(msg: GmailMessage, myEmail: string): Promise<IngestResult> {
-  const found = must(await db().from("emails").select("id").eq("gmail_message_id", msg.id).limit(1)) as { id: string }[];
+/** Store one Gmail message of `accountId` (if it's a client conversation) and match/create the client. */
+export async function ingestMessage(accountId: string, msg: GmailMessage, myEmail: string): Promise<IngestResult> {
+  const found = must(
+    await db().from("emails").select("id").eq("account_id", accountId).eq("gmail_message_id", msg.id).limit(1),
+  ) as { id: string }[];
   if (found[0]) return { status: "exists", emailId: found[0].id };
 
   const labels = msg.labelIds ?? [];
@@ -62,13 +63,14 @@ export async function ingestMessage(msg: GmailMessage, myEmail: string): Promise
     if (!counterpart) return { status: "skipped", reason: "note to self" };
   }
 
-  const client = await findOrCreateClient(counterpart.email, counterpart.name);
+  const client = await findOrCreateClient(accountId, counterpart.email, counterpart.name);
 
-  // New messages inherit the project already linked to their thread.
+  // New messages inherit the project already linked to their thread (same account only).
   const threadProject = must(
     await db()
       .from("emails")
       .select("project_id")
+      .eq("account_id", accountId)
       .eq("gmail_thread_id", msg.threadId)
       .not("project_id", "is", null)
       .limit(1),
@@ -76,6 +78,7 @@ export async function ingestMessage(msg: GmailMessage, myEmail: string): Promise
 
   const sentAt = new Date(Number(msg.internalDate ?? Date.now())).toISOString();
   const row = {
+    account_id: accountId,
     gmail_message_id: msg.id,
     gmail_thread_id: msg.threadId,
     message_id_header: header(msg, "Message-ID") || header(msg, "Message-Id") || null,
@@ -92,31 +95,34 @@ export async function ingestMessage(msg: GmailMessage, myEmail: string): Promise
     // Read/unread is tracked only in Supabase. Gmail's UNREAD label is never read from or written to.
     is_read: direction === "outbound",
   };
-  const ins = await db().from("emails").insert(row).select("id").single();
+  const ins = await db().from("emails").insert({ ...row, account_id: accountId }).select("id").single();
   if (ins.error) {
     if (ins.error.code === "23505") {
-      const again = must(await db().from("emails").select("id").eq("gmail_message_id", msg.id).single()) as { id: string };
+      const again = must(
+        await db().from("emails").select("id").eq("account_id", accountId).eq("gmail_message_id", msg.id).single(),
+      ) as { id: string };
       return { status: "exists", emailId: again.id };
     }
     throw new Error(ins.error.message);
   }
 
   // Leonel replied (from Gmail or from here) → any open draft for earlier emails in the thread is stale.
-  if (direction === "outbound") await supersedeThreadDrafts(msg.threadId, sentAt);
+  if (direction === "outbound") await supersedeThreadDrafts(accountId, msg.threadId, sentAt);
 
   return { status: "inserted", emailId: (ins.data as { id: string }).id, direction, threadId: msg.threadId, sentAt };
 }
 
 /** Mark open drafts on emails in a thread sent before `before` as superseded. */
-export async function supersedeThreadDrafts(threadId: string, before: string, exceptEmailId?: string) {
+export async function supersedeThreadDrafts(accountId: string, threadId: string, before: string, exceptEmailId?: string) {
   const earlier = must(
-    await db().from("emails").select("id").eq("gmail_thread_id", threadId).lt("sent_at", before),
+    await db().from("emails").select("id").eq("account_id", accountId).eq("gmail_thread_id", threadId).lt("sent_at", before),
   ) as { id: string }[];
   const ids = earlier.map((e) => e.id).filter((id) => id !== exceptEmailId);
   if (!ids.length) return;
   await db()
     .from("drafts")
     .update({ status: "superseded", updated_at: new Date().toISOString() })
+    .eq("account_id", accountId)
     .in("email_id", ids)
     .in("status", ["pending", "revised"]);
 }
@@ -126,7 +132,7 @@ export async function supersedeThreadDrafts(threadId: string, before: string, ex
  * the latest message in its thread, from a non-ignored client, within the lookback window,
  * with no open draft already.
  */
-export async function pickDraftCandidates(results: IngestResult[]): Promise<string[]> {
+export async function pickDraftCandidates(accountId: string, results: IngestResult[]): Promise<string[]> {
   const cutoff = Date.now() - env.draftLookbackDays() * 86_400_000;
   const threads = new Set(
     results.filter((r) => r.status === "inserted" && r.direction === "inbound").map((r) => (r as { threadId: string }).threadId),
@@ -136,7 +142,8 @@ export async function pickDraftCandidates(results: IngestResult[]): Promise<stri
     const latest = (must(
       await db()
         .from("emails")
-        .select("id,direction,sent_at,clients(ignored)")
+        .select("id,direction,sent_at,clients!emails_client_fk(ignored)")
+        .eq("account_id", accountId)
         .eq("gmail_thread_id", threadId)
         .order("sent_at", { ascending: false })
         .limit(1),
@@ -145,63 +152,69 @@ export async function pickDraftCandidates(results: IngestResult[]): Promise<stri
     if (latest.clients?.ignored) continue;
     if (new Date(latest.sent_at).getTime() < cutoff) continue;
     const open = must(
-      await db().from("drafts").select("id").eq("email_id", latest.id).in("status", ["pending", "revised"]).limit(1),
+      await db().from("drafts").select("id").eq("account_id", accountId).eq("email_id", latest.id).in("status", ["pending", "revised"]).limit(1),
     ) as { id: string }[];
     if (open.length) continue;
-    await supersedeThreadDrafts(threadId, latest.sent_at, latest.id);
+    await supersedeThreadDrafts(accountId, threadId, latest.sent_at, latest.id);
     out.push(latest.id);
   }
   return out;
 }
 
-async function ingestIds(ids: string[], myEmail: string) {
+async function ingestIds(accountId: string, ids: string[], myEmail: string) {
+  const gmail = gmailFor(accountId);
   const results: IngestResult[] = [];
   const messages: GmailMessage[] = [];
   for (const id of ids) {
     try {
-      messages.push(await Gmail.getMessage(id));
+      messages.push(await gmail.getMessage(id));
     } catch (e) {
       if ((e as { status?: number }).status === 404) continue; // deleted since
       throw e;
     }
   }
   messages.sort((a, b) => Number(a.internalDate) - Number(b.internalDate));
-  for (const m of messages) results.push(await ingestMessage(m, myEmail));
+  for (const m of messages) results.push(await ingestMessage(accountId, m, myEmail));
   return results;
 }
 
-/** Initial / manual import: recent inbox + sent mail. Returns email ids that need drafts. */
-export async function syncRecent(days = 14, max = 150) {
-  const acct = await getAccount();
-  const profile = await Gmail.profile();
-  const ids = await Gmail.listMessageIds(`newer_than:${days}d -in:chats -in:drafts -in:spam -in:trash`, max);
-  const results = await ingestIds(ids.map((m) => m.id), acct.email);
+/** Initial / manual import for one account: recent inbox + sent mail. Returns email ids that need drafts. */
+export async function syncRecent(accountId: string, days = 14, max = 150) {
+  const acct = await getAccount(accountId);
+  const gmail = gmailFor(accountId);
+  const profile = await gmail.profile();
+  if (profile.emailAddress.toLowerCase() !== acct.email_address) {
+    throw new Error(`Token for ${acct.email_address} belongs to ${profile.emailAddress}; refusing to sync.`);
+  }
+  const ids = await gmail.listMessageIds(`newer_than:${days}d -in:chats -in:drafts -in:spam -in:trash`, max);
+  const results = await ingestIds(accountId, ids.map((m) => m.id), acct.email_address);
   await db()
-    .from("gmail_account")
-    .update({ history_id: acct.history_id ?? profile.historyId, last_synced_at: new Date().toISOString() })
-    .eq("id", 1);
-  return { results, draftEmailIds: await pickDraftCandidates(results) };
+    .from("gmail_accounts")
+    .update({ history_id: acct.history_id ?? profile.historyId, last_synced_at: new Date().toISOString(), last_error: null })
+    .eq("id", accountId);
+  return { results, draftEmailIds: await pickDraftCandidates(accountId, results) };
 }
 
-/** Incremental sync using Gmail history (called by the Pub/Sub webhook and "Sync now"). */
-export async function syncHistory() {
-  const acct = await getAccount();
-  if (!acct.history_id) return syncRecent();
+/** Incremental sync for one account using Gmail history (push webhook, cron and "Sync now"). */
+export async function syncHistory(accountId: string) {
+  const acct = await getAccount(accountId);
+  if (!acct.connected) throw new Error(`${acct.email_address} is disconnected.`);
+  if (!acct.history_id) return syncRecent(accountId);
   let added: { ids: string[]; historyId: string };
   try {
-    added = await Gmail.historyAdded(acct.history_id);
+    added = await gmailFor(accountId).historyAdded(acct.history_id);
   } catch (e) {
     if ((e as { status?: number }).status === 404) {
       // History id expired (~1 week); restart from a fresh window.
-      await db().from("gmail_account").update({ history_id: null }).eq("id", 1);
-      return syncRecent(7);
+      await db().from("gmail_accounts").update({ history_id: null }).eq("id", accountId);
+      return syncRecent(accountId, 7);
     }
     throw e;
   }
-  const results = await ingestIds(added.ids, acct.email);
+  const results = await ingestIds(accountId, added.ids, acct.email_address);
   await db()
-    .from("gmail_account")
-    .update({ history_id: added.historyId, last_synced_at: new Date().toISOString() })
-    .eq("id", 1);
-  return { results, draftEmailIds: await pickDraftCandidates(results) };
+    .from("gmail_accounts")
+    .update({ history_id: added.historyId, last_synced_at: new Date().toISOString(), last_error: null })
+    .eq("id", accountId);
+  return { results, draftEmailIds: await pickDraftCandidates(accountId, results) };
 }

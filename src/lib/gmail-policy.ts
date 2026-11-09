@@ -16,6 +16,7 @@ const ALLOWED: readonly [string, RegExp, string][] = [
   ["GET", /^messages\/[A-Za-z0-9]+\?format=(full|metadata)(&metadataHeaders=[A-Za-z-]+)*$/, "users.messages.get (read-only)"],
   ["GET", /^history\?[^/]*$/, "users.history.list (read-only)"],
   ["POST", /^watch$/, "users.watch — push notifications only; does not change mail"],
+  ["POST", /^stop$/, "users.stop — turns off push notifications when disconnecting; does not change mail"],
   ["POST", /^messages\/send$/, "users.messages.send — Accept button only"],
 ];
 

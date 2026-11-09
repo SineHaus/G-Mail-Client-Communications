@@ -4,6 +4,8 @@ import { db, must } from "@/lib/db";
 import type { Client } from "@/lib/types";
 import { timeAgo } from "@/lib/format";
 import SearchBox from "@/components/SearchBox";
+import { getCurrentAccount } from "@/lib/accounts";
+import NoAccount from "@/components/NoAccount";
 
 export const dynamic = "force-dynamic";
 
@@ -11,8 +13,15 @@ export default async function ClientsPage({ searchParams }: PageProps<"/clients"
   const sp = await searchParams;
   const q = String(sp.q ?? "").trim();
   const showIgnored = sp.ignored === "1";
+  const acct = await getCurrentAccount();
+  if (!acct) return <NoAccount />;
 
-  let query = db().from("clients").select("*, emails(count)").order("created_at", { ascending: false }).limit(500);
+  let query = db()
+    .from("clients")
+    .select("*, emails!emails_client_fk(count)")
+    .eq("account_id", acct.id)
+    .order("created_at", { ascending: false })
+    .limit(500);
   if (!showIgnored) query = query.eq("ignored", false);
   if (q) {
     const safe = q.replace(/[%,()]/g, " ");
@@ -21,7 +30,7 @@ export default async function ClientsPage({ searchParams }: PageProps<"/clients"
   const clients = must(await query) as unknown as (Client & { emails: { count: number }[] })[];
 
   const recent = must(
-    await db().from("emails").select("client_id,sent_at").order("sent_at", { ascending: false }).limit(2000),
+    await db().from("emails").select("client_id,sent_at").eq("account_id", acct.id).order("sent_at", { ascending: false }).limit(2000),
   ) as { client_id: string; sent_at: string }[];
   const last = new Map<string, string>();
   for (const r of recent) if (r.client_id && !last.has(r.client_id)) last.set(r.client_id, r.sent_at);
@@ -32,7 +41,7 @@ export default async function ClientsPage({ searchParams }: PageProps<"/clients"
       <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Clients</h1>
-          <p className="text-sm text-stone-500">Created automatically from your email. {clients.length} shown.</p>
+          <p className="text-sm text-stone-500">Created automatically from {acct.email_address}. {clients.length} shown.</p>
         </div>
         <div className="flex items-center gap-3">
           <Suspense>

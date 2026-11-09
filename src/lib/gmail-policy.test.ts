@@ -29,6 +29,7 @@ test("allowed calls: read-only fetch/sync/push + messages.send", () => {
     ["GET", "messages/18c2f0a1b2c3d4e5?format=metadata&metadataHeaders=Message-ID&metadataHeaders=References"],
     ["GET", "history?startHistoryId=123&historyTypes=messageAdded"],
     ["POST", "watch"],
+    ["POST", "stop"],
     ["POST", "messages/send"],
   ]) assert.doesNotThrow(() => assertAllowedGmailCall(m, p), `${m} ${p}`);
 });
@@ -50,7 +51,6 @@ test("blocked: every label-changing or destructive Gmail call", () => {
     ["POST", "drafts/send"],
     ["POST", "labels"],
     ["PATCH", "labels/Label_1"],
-    ["POST", "stop"],
     ["GET", "messages/abc/modify"],
     ["GET", "messages/abc?format=full/../modify"],
     ["POST", "settings/filters"],

@@ -4,18 +4,21 @@ import { db } from "@/lib/db";
 import type { Client, Email, Project } from "@/lib/types";
 import ProjectEditor from "@/components/ProjectEditor";
 import EmailHistory from "@/components/EmailHistory";
+import { getCurrentAccount } from "@/lib/accounts";
 
 export const dynamic = "force-dynamic";
 
 export default async function ProjectPage({ params }: PageProps<"/projects/[id]">) {
   const { id } = await params;
-  const res = await db().from("projects").select("*").eq("id", id).maybeSingle();
+  const acct = await getCurrentAccount();
+  if (!acct) notFound();
+  const res = await db().from("projects").select("*").eq("account_id", acct.id).eq("id", id).maybeSingle();
   if (!res.data) notFound();
   const project = res.data as Project;
   const [emails, clients, drafts] = await Promise.all([
-    db().from("emails").select("*").eq("project_id", id).order("sent_at", { ascending: true }),
-    db().from("clients").select("id,name,email").order("name"),
-    db().from("drafts").select("id,email_id").in("status", ["pending", "revised"]),
+    db().from("emails").select("*").eq("account_id", acct.id).eq("project_id", id).order("sent_at", { ascending: true }),
+    db().from("clients").select("id,name,email").eq("account_id", acct.id).order("name"),
+    db().from("drafts").select("id,email_id").eq("account_id", acct.id).in("status", ["pending", "revised"]),
   ]);
   const allClients = (clients.data ?? []) as Pick<Client, "id" | "name" | "email">[];
   const clientMap = Object.fromEntries(allClients.map((c) => [c.id, { id: c.id, name: c.name || c.email }]));

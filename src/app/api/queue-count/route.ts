@@ -4,12 +4,14 @@ import { requireSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
+/** Newest open draft across all accounts (drives the "new draft" notification + switcher refresh). */
 export async function GET() {
   try {
     await requireSession();
   } catch {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
+  // isolation-exempt: returns only a count and a timestamp across the owner's accounts — no row data.
   const { count, data } = await db()
     .from("drafts")
     .select("created_at", { count: "exact" })

@@ -9,10 +9,12 @@ const QUICK = ["Make it shorter", "Make it warmer", "More formal", "Ask what dat
 export default function DraftEditor({
   draft,
   to,
+  fromAccount,
   chat: initialChat,
 }: {
   draft: { id: string; body: string; status: string; error: string | null };
   to: string;
+  fromAccount: string;
   chat: { role: "user" | "assistant"; content: string }[];
 }) {
   const router = useRouter();
@@ -57,7 +59,9 @@ export default function DraftEditor({
     <div className="space-y-4 lg:sticky lg:top-6">
       <div className="card p-4">
         <div className="mb-2 flex items-center justify-between">
-          <div className="label mb-0">Reply to {to}</div>
+          <div className="label mb-0">
+            Reply to {to} <span className="tracking-normal normal-case">· sends from {fromAccount}</span>
+          </div>
           <span className="text-xs text-stone-400">{body !== saved ? "Unsaved changes" : "Saved"}</span>
         </div>
         {draft.error && !draft.body ? (

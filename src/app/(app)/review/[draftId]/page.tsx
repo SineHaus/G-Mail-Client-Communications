@@ -9,22 +9,28 @@ import ProjectLinker from "@/components/ProjectLinker";
 import ProjectSuggestion from "@/components/ProjectSuggestion";
 import MarkReadOnOpen from "@/components/MarkReadOnOpen";
 import ReadToggle from "@/components/ReadToggle";
+import { getCurrentAccount } from "@/lib/accounts";
 
 export const dynamic = "force-dynamic";
 
 export default async function ReviewPage({ params }: PageProps<"/review/[draftId]">) {
   const { draftId } = await params;
-  const res = await db().from("drafts").select("*").eq("id", draftId).maybeSingle();
+  const acct = await getCurrentAccount();
+  if (!acct) notFound();
+  // Only drafts of the selected account are found; another account's draft id is a 404 here.
+  const res = await db().from("drafts").select("*").eq("account_id", acct.id).eq("id", draftId).maybeSingle();
   if (!res.data) notFound();
   const draft = res.data as Draft;
-  const email = must(await db().from("emails").select("*").eq("id", draft.email_id).single()) as Email;
+  const email = must(await db().from("emails").select("*").eq("account_id", acct.id).eq("id", draft.email_id).single()) as Email;
   const [thread, client, chat, projects, suggested] = await Promise.all([
-    db().from("emails").select("*").eq("gmail_thread_id", email.gmail_thread_id).order("sent_at"),
-    email.client_id ? db().from("clients").select("*").eq("id", email.client_id).maybeSingle() : Promise.resolve({ data: null }),
-    db().from("draft_messages").select("role,content,created_at").eq("draft_id", draftId).order("created_at"),
-    db().from("projects").select("id,project_name,project_number,client_id,status").order("created_at", { ascending: false }).limit(300),
+    db().from("emails").select("*").eq("account_id", acct.id).eq("gmail_thread_id", email.gmail_thread_id).order("sent_at"),
+    email.client_id
+      ? db().from("clients").select("*").eq("account_id", acct.id).eq("id", email.client_id).maybeSingle()
+      : Promise.resolve({ data: null }),
+    db().from("draft_messages").select("role,content,created_at").eq("draft_id", draft.id).order("created_at"),
+    db().from("projects").select("id,project_name,project_number,client_id,status").eq("account_id", acct.id).order("created_at", { ascending: false }).limit(300),
     draft.suggested_project_id
-      ? db().from("projects").select("id,project_name,project_number").eq("id", draft.suggested_project_id).maybeSingle()
+      ? db().from("projects").select("id,project_name,project_number").eq("account_id", acct.id).eq("id", draft.suggested_project_id).maybeSingle()
       : Promise.resolve({ data: null }),
   ]);
   const c = client.data as Client | null;
@@ -102,6 +108,7 @@ export default async function ReviewPage({ params }: PageProps<"/review/[draftId
           <DraftEditor
             draft={{ id: draft.id, body: draft.body, status: draft.status, error: draft.error }}
             to={email.from_address ?? c?.email ?? ""}
+            fromAccount={acct.email_address}
             chat={(chat.data ?? []) as { role: "user" | "assistant"; content: string }[]}
           />
         </section>

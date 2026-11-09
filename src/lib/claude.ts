@@ -39,6 +39,7 @@ const ReviseSchema = z.object({
 
 interface EmailRow {
   id: string;
+  account_id: string;
   gmail_thread_id: string;
   client_id: string | null;
   project_id: string | null;
@@ -55,16 +56,25 @@ function fmtEmail(e: EmailRow) {
   return `--- ${e.direction === "outbound" ? "SENT BY" : "FROM"} ${who} · ${new Date(e.sent_at).toUTCString()}\nSubject: ${e.subject ?? ""}\n${(e.body ?? "").slice(0, 6000)}`;
 }
 
-/** Everything Claude needs to know about the email being replied to. */
-async function buildContext(emailId: string) {
-  const email = must(await db().from("emails").select("*").eq("id", emailId).single()) as EmailRow;
+/**
+ * Everything Claude needs to know about the email being replied to.
+ * Every query is scoped to the email's own Gmail account, so context never mixes accounts.
+ */
+async function buildContext(emailId: string, accountId: string) {
+  const email = must(
+    await db().from("emails").select("*").eq("account_id", accountId).eq("id", emailId).single(),
+  ) as EmailRow;
+  const acct = accountId;
   const [thread, clientRows, otherEmails, projects, styles] = await Promise.all([
-    db().from("emails").select("*").eq("gmail_thread_id", email.gmail_thread_id).lte("sent_at", email.sent_at).order("sent_at"),
-    email.client_id ? db().from("clients").select("*").eq("id", email.client_id) : Promise.resolve({ data: [], error: null }),
+    db().from("emails").select("*").eq("account_id", acct).eq("gmail_thread_id", email.gmail_thread_id).lte("sent_at", email.sent_at).order("sent_at"),
+    email.client_id
+      ? db().from("clients").select("*").eq("account_id", acct).eq("id", email.client_id)
+      : Promise.resolve({ data: [], error: null }),
     email.client_id
       ? db()
           .from("emails")
           .select("*")
+          .eq("account_id", acct)
           .eq("client_id", email.client_id)
           .neq("gmail_thread_id", email.gmail_thread_id)
           .order("sent_at", { ascending: false })
@@ -73,10 +83,11 @@ async function buildContext(emailId: string) {
     db()
       .from("projects")
       .select("id,project_name,project_number,status,event_date,notes,client_id")
+      .eq("account_id", acct)
       .in("status", ["inquiry", "booked"])
       .order("created_at", { ascending: false })
       .limit(60),
-    db().from("style_examples").select("context,body").order("created_at", { ascending: false }).limit(15),
+    db().from("style_examples").select("context,body").eq("account_id", acct).order("created_at", { ascending: false }).limit(15),
   ]);
 
   const c = (clientRows.data as Record<string, string | null>[])[0];
@@ -84,7 +95,7 @@ async function buildContext(emailId: string) {
   const allProjects = (projects.data ?? []) as P[];
   let linked: P | undefined = allProjects.find((p) => p.id === email.project_id);
   if (email.project_id && !linked) {
-    linked = (must(await db().from("projects").select("*").eq("id", email.project_id)) as P[])[0];
+    linked = (must(await db().from("projects").select("*").eq("account_id", acct).eq("id", email.project_id)) as P[])[0];
   }
   const clientProjects = allProjects.filter((p) => p.client_id === email.client_id);
   const otherProjects = allProjects.filter((p) => p.client_id !== email.client_id);
@@ -128,10 +139,10 @@ async function ask<T extends z.ZodType>(schema: T, messages: Anthropic.Beta.Beta
   return res.parsed_output as z.infer<T>;
 }
 
-/** Create a pending draft for an inbound email. Never sends anything. */
-export async function generateDraft(emailId: string) {
+/** Create a pending draft for an inbound email of `accountId`. Never sends anything. */
+export async function generateDraft(accountId: string, emailId: string) {
   try {
-    const { context, projects } = await buildContext(emailId);
+    const { context, projects } = await buildContext(emailId, accountId);
     const out = await ask(DraftSchema, [
       {
         role: "user",
@@ -141,6 +152,7 @@ export async function generateDraft(emailId: string) {
     const num = out.suggested_project_number?.replace(/^#/, "").trim();
     const suggested = num ? projects.find((p) => p.project_number === num) : undefined;
     const ins = await db().from("drafts").insert({
+      account_id: accountId,
       email_id: emailId,
       body: ensureSignature(out.reply),
       status: "pending",
@@ -152,6 +164,7 @@ export async function generateDraft(emailId: string) {
     console.error("generateDraft failed", emailId, e);
     // Record the failure so it shows in the Review Queue with a Retry button.
     await db().from("drafts").insert({
+      account_id: accountId,
       email_id: emailId,
       body: "",
       status: "pending",
@@ -160,13 +173,13 @@ export async function generateDraft(emailId: string) {
   }
 }
 
-export async function generateDrafts(emailIds: string[]) {
-  for (const id of emailIds) await generateDraft(id);
+export async function generateDrafts(accountId: string, emailIds: string[]) {
+  for (const id of emailIds) await generateDraft(accountId, id);
 }
 
 /** Review-view chat: apply Leonel's instruction to the current draft. */
-export async function reviseDraft(draftId: string, instruction: string, currentBody?: string) {
-  const draft = must(await db().from("drafts").select("*").eq("id", draftId).single()) as {
+export async function reviseDraft(accountId: string, draftId: string, instruction: string, currentBody?: string) {
+  const draft = must(await db().from("drafts").select("*").eq("account_id", accountId).eq("id", draftId).single()) as {
     id: string;
     email_id: string;
     body: string;
@@ -174,7 +187,7 @@ export async function reviseDraft(draftId: string, instruction: string, currentB
   const history = must(
     await db().from("draft_messages").select("role,content").eq("draft_id", draftId).order("created_at"),
   ) as { role: "user" | "assistant"; content: string }[];
-  const { context } = await buildContext(draft.email_id);
+  const { context } = await buildContext(draft.email_id, accountId);
   const body = currentBody ?? draft.body;
 
   const out = await ask(ReviseSchema, [
@@ -197,6 +210,7 @@ export async function reviseDraft(draftId: string, instruction: string, currentB
   await db()
     .from("drafts")
     .update({ body: newBody, status: "revised", error: null, updated_at: new Date().toISOString() })
+    .eq("account_id", accountId)
     .eq("id", draftId);
   return { body: newBody, note: out.note };
 }

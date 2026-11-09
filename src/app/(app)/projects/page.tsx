@@ -5,6 +5,8 @@ import type { Client, Project } from "@/lib/types";
 import { fmtDate, STATUS_STYLES } from "@/lib/format";
 import SearchBox from "@/components/SearchBox";
 import AddProjectButton from "@/components/AddProjectButton";
+import { getCurrentAccount } from "@/lib/accounts";
+import NoAccount from "@/components/NoAccount";
 
 export const dynamic = "force-dynamic";
 const STATUSES = ["all", "inquiry", "booked", "completed", "cancelled"];
@@ -13,15 +15,24 @@ export default async function ProjectsPage({ searchParams }: PageProps<"/project
   const sp = await searchParams;
   const q = String(sp.q ?? "").trim();
   const status = STATUSES.includes(String(sp.status)) ? String(sp.status) : "all";
+  const acct = await getCurrentAccount();
+  if (!acct) return <NoAccount />;
 
-  let query = db().from("projects").select("*, clients(id,name,email), emails(count)").order("created_at", { ascending: false }).limit(500);
+  let query = db()
+    .from("projects")
+    .select("*, clients!projects_client_fk(id,name,email), emails!emails_project_fk(count)")
+    .eq("account_id", acct.id)
+    .order("created_at", { ascending: false })
+    .limit(500);
   if (status !== "all") query = query.eq("status", status);
   if (q) {
     const safe = q.replace(/[%,()]/g, " ");
     query = query.or(`project_name.ilike.%${safe}%,project_number.ilike.%${safe}%`);
   }
   const projects = must(await query) as unknown as (Project & { clients: Pick<Client, "id" | "name" | "email"> | null; emails: { count: number }[] })[];
-  const clients = must(await db().from("clients").select("id,name,email").eq("ignored", false).order("name")) as Pick<Client, "id" | "name" | "email">[];
+  const clients = must(
+    await db().from("clients").select("id,name,email").eq("account_id", acct.id).eq("ignored", false).order("name"),
+  ) as Pick<Client, "id" | "name" | "email">[];
 
   return (
     <div className="mx-auto max-w-5xl">

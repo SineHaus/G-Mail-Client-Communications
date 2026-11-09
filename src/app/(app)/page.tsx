@@ -9,6 +9,8 @@ import ProjectSuggestion from "@/components/ProjectSuggestion";
 import SearchBox from "@/components/SearchBox";
 import SyncButton from "@/components/SyncButton";
 import ReadToggle from "@/components/ReadToggle";
+import { getCurrentAccount } from "@/lib/accounts";
+import NoAccount from "@/components/NoAccount";
 
 export const dynamic = "force-dynamic";
 
@@ -27,13 +29,16 @@ export default async function QueuePage({ searchParams }: PageProps<"/">) {
   const sp = await searchParams;
   const tab = TABS.find((t) => t.key === sp.tab) ?? TABS[0];
   const q = String(sp.q ?? "").toLowerCase().trim();
+  const acct = await getCurrentAccount();
+  if (!acct) return <NoAccount />;
 
   let rows = must(
     await db()
       .from("drafts")
       .select(
-        "*, emails!inner(*, clients(*), projects(id,project_name,project_number)), suggested:projects!drafts_suggested_project_id_fkey(id,project_name,project_number)",
+        "*, emails!drafts_email_fk!inner(*, clients!emails_client_fk(*), projects!emails_project_fk(id,project_name,project_number)), suggested:projects!drafts_suggested_project_fk(id,project_name,project_number)",
       )
+      .eq("account_id", acct.id)
       .in("status", tab.statuses)
       .order(tab.key === "open" ? "created_at" : "updated_at", { ascending: false })
       .limit(200),
@@ -46,7 +51,6 @@ export default async function QueuePage({ searchParams }: PageProps<"/">) {
         .some((s) => s!.toLowerCase().includes(q)),
     );
   }
-  const acct = await db().from("gmail_account").select("email,last_synced_at").eq("id", 1).maybeSingle();
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -54,14 +58,14 @@ export default async function QueuePage({ searchParams }: PageProps<"/">) {
         <div>
           <h1 className="text-2xl font-semibold">Review Queue</h1>
           <p className="text-sm text-stone-500">
-            Claude drafts a reply to every new client email. Nothing is sent until you press Accept.
+            <span className="font-medium text-stone-700">{acct.email_address}</span> · Claude drafts a reply to every new client email. Nothing is sent until you press Accept.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <Suspense>
             <SearchBox placeholder="Search client, subject, text…" />
           </Suspense>
-          <SyncButton lastSynced={acct.data?.last_synced_at ?? null} />
+          {acct.connected && <SyncButton lastSynced={acct.last_synced_at} />}
         </div>
       </header>
 
@@ -79,13 +83,15 @@ export default async function QueuePage({ searchParams }: PageProps<"/">) {
         ))}
       </div>
 
-      {!acct.data && (
-        <div className="card p-6 text-sm">
-          Gmail isn&apos;t connected yet. <a className="text-brand-700 underline" href="/api/auth/google">Connect Gmail</a>.
+      {!acct.connected && (
+        <div className="card mb-4 p-4 text-sm">
+          {acct.email_address} is disconnected. You can still browse its history.{" "}
+          <a className="text-brand-700 underline" href={`/api/auth/google?mode=add&hint=${encodeURIComponent(acct.email_address)}`}>Reconnect</a>{" "}
+          to sync and send.
         </div>
       )}
 
-      {rows.length === 0 && acct.data && (
+      {rows.length === 0 && (
         <div className="card p-10 text-center text-sm text-stone-500">
           {tab.key === "open" ? "All caught up — no drafts waiting for review." : "Nothing here yet."}
         </div>

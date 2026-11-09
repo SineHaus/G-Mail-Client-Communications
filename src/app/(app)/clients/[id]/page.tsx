@@ -6,18 +6,26 @@ import { fmtDate, STATUS_STYLES } from "@/lib/format";
 import ClientEditor from "@/components/ClientEditor";
 import EmailHistory from "@/components/EmailHistory";
 import AddProjectButton from "@/components/AddProjectButton";
+import { getCurrentAccount } from "@/lib/accounts";
 
 export const dynamic = "force-dynamic";
 
 export default async function ClientPage({ params }: PageProps<"/clients/[id]">) {
   const { id } = await params;
-  const res = await db().from("clients").select("*").eq("id", id).maybeSingle();
+  const acct = await getCurrentAccount();
+  if (!acct) notFound();
+  const res = await db().from("clients").select("*").eq("account_id", acct.id).eq("id", id).maybeSingle();
   if (!res.data) notFound();
   const client = res.data as Client;
   const [emails, projects, drafts] = await Promise.all([
-    db().from("emails").select("*, projects(id,project_name,project_number)").eq("client_id", id).order("sent_at", { ascending: false }),
-    db().from("projects").select("*").eq("client_id", id).order("created_at", { ascending: false }),
-    db().from("drafts").select("id,email_id,status").in("status", ["pending", "revised"]),
+    db()
+      .from("emails")
+      .select("*, projects!emails_project_fk(id,project_name,project_number)")
+      .eq("account_id", acct.id)
+      .eq("client_id", id)
+      .order("sent_at", { ascending: false }),
+    db().from("projects").select("*").eq("account_id", acct.id).eq("client_id", id).order("created_at", { ascending: false }),
+    db().from("drafts").select("id,email_id,status").eq("account_id", acct.id).in("status", ["pending", "revised"]),
   ]);
   const list = (emails.data ?? []) as (Email & { projects: Pick<Project, "id" | "project_name" | "project_number"> | null })[];
   const openDrafts = Object.fromEntries(((drafts.data ?? []) as { id: string; email_id: string }[]).map((d) => [d.email_id, d.id]));
