@@ -1,36 +1,110 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Client Communications Dashboard — The Event Rental Guys
 
-## Getting Started
+A web dashboard that connects to Gmail and handles all client communication in one place.
+Claude drafts a reply to every new client email in Leonel's voice. **Nothing is sent until Leonel presses Accept.**
 
-First, run the development server:
+- **Review Queue** (home): every new client email with Claude's draft beside it. Accept / Review / Decline.
+- **Review view**: full thread, editable draft, chat with Claude ("make it shorter"), link to a project.
+- **Clients**: auto-created from email addresses; search; profile with contact info, notes, projects and full email history.
+- **Projects**: name + number, status, event date, notes; every linked email in order. Claude suggests a project for each new email, confirmed with one click.
+- **Settings**: Gmail connection and push status, manual sync, and the style examples Claude uses for Leonel's tone.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+Drafts live only in this app's database, never in Gmail Drafts. Only the Accept button sends mail (`src/lib/send.ts` is the single code path that calls Gmail's send API).
+
+## Stack
+
+Next.js 16 (App Router) + Tailwind CSS 4 · Supabase Postgres · Gmail API (Google OAuth, Pub/Sub push) · Anthropic API (Claude) · Vercel.
+
+```
+src/
+  app/(app)/            Review Queue, review/[draftId], clients, projects, settings
+  app/api/auth/*        Google sign-in / callback / logout
+  app/api/gmail/webhook Pub/Sub push endpoint → incremental sync → drafts
+  app/api/cron/renew-watch  daily: renew Gmail watch + catch-up sync
+  app/actions.ts        server actions (accept, decline, revise, link project, …)
+  lib/google.ts         OAuth + Gmail REST calls
+  lib/ingest.ts         Gmail → emails/clients; picks which emails get drafts
+  lib/claude.ts         drafting + revision prompts (drafting rules live here)
+  lib/send.ts           Accept → send reply in the same Gmail thread
+  lib/email-parse.ts    MIME parsing, quote stripping, reply building (unit-tested)
+  proxy.ts              login guard for every page and API route
+supabase/schema.sql     database schema — run once in Supabase
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Setup, step by step
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+You'll create four accounts/projects: Google Cloud, Supabase, Anthropic, Vercel. Budget ~45 minutes.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### 1. Google Cloud project + Gmail API
 
-## Learn More
+1. Go to <https://console.cloud.google.com/>, sign in with **Leonel's Google account**, and create a new project (top bar → project picker → **New project**), e.g. `erg-dashboard`. Note the **project ID**.
+2. **APIs & Services → Library**: search for and **Enable** both **Gmail API** and **Cloud Pub/Sub API**.
 
-To learn more about Next.js, take a look at the following resources:
+### 2. OAuth consent screen
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+1. **APIs & Services → OAuth consent screen** (also labelled *Google Auth Platform*). Click **Get started**.
+2. App name `ERG Client Dashboard`, support email = Leonel's.
+3. **Audience**:
+   - If Leonel's email is a **Google Workspace** address (e.g. `leonel@eventrentalguys.com` on Google Workspace): choose **Internal**. Done — no verification needed.
+   - If it's a regular **@gmail.com** address: choose **External**, add Leonel's address under **Test users**, then go back to **Audience** and click **Publish app** (status *In production*). Google will show an "unverified app" warning at sign-in — click **Advanced → Go to ERG Client Dashboard**. This is fine for a single private user. *(If you leave it in "Testing", Google expires the Gmail permission every 7 days and Leonel has to sign in again.)*
+4. **Data access → Add or remove scopes**: add `.../auth/gmail.readonly` and `.../auth/gmail.send` (plus `openid`, `email`, `profile`). Save.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### 3. OAuth client credentials
 
-## Deploy on Vercel
+1. **APIs & Services → Credentials → Create credentials → OAuth client ID**.
+2. Application type **Web application**, name `ERG dashboard`.
+3. **Authorized redirect URIs** — add both:
+   - `http://localhost:3000/api/auth/callback`
+   - `https://YOUR-APP.vercel.app/api/auth/callback` (add after step 7 once you know the URL)
+4. Create, then copy the **Client ID** and **Client secret** into `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+### 4. Pub/Sub for new-email push notifications
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. **Pub/Sub → Topics → Create topic**, ID `gmail-inbox` (uncheck "default subscription"). The full name is `projects/PROJECT_ID/topics/gmail-inbox` → `GMAIL_PUBSUB_TOPIC`.
+2. Open the topic → **Permissions** (right panel; may need *Show info panel*) → **Add principal**: `gmail-api-push@system.gserviceaccount.com`, role **Pub/Sub Publisher**. This lets Gmail publish to your topic.
+3. Generate a random token for `GMAIL_WEBHOOK_TOKEN` (e.g. `openssl rand -hex 24`).
+4. After deploying (step 7): **Subscriptions → Create subscription**, topic `gmail-inbox`, delivery type **Push**, endpoint
+   `https://YOUR-APP.vercel.app/api/gmail/webhook?token=YOUR_GMAIL_WEBHOOK_TOKEN`, acknowledgement deadline 60 s. Create.
+
+Push needs a public HTTPS URL, so it only works on the deployed app. Locally, use **Sync now**.
+
+### 5. Supabase
+
+1. Create a project at <https://supabase.com/dashboard>.
+2. **SQL Editor → New query**, paste the whole of `supabase/schema.sql`, **Run**.
+3. **Project Settings → API**: copy the **Project URL** → `SUPABASE_URL` and the **service_role** secret → `SUPABASE_SERVICE_ROLE_KEY`. (Row-level security is on with no policies, so the public anon key can't read anything; only this server can.)
+
+### 6. Anthropic
+
+Create an API key at <https://console.anthropic.com/> → `ANTHROPIC_API_KEY`. Drafts use `claude-opus-5-5` by default (override with `ANTHROPIC_MODEL`). Requests opt into Anthropic's server-side refusal fallback, so a declined request is retried on a fallback model automatically.
+
+### 7. Run locally, then deploy to Vercel
+
+```bash
+cp .env.example .env.local   # fill in every value
+npm install
+npm run dev
+```
+
+Open <http://localhost:3000>, **Sign in with Google**, allow Gmail access. The app imports the last 14 days of mail, creates client profiles, and drafts replies for unanswered client emails from the last 3 days. Then open **Settings → Import from my Sent mail** so Claude learns Leonel's tone.
+
+Deploy: push this folder to a GitHub repo, import it at <https://vercel.com/new>, add every variable from `.env.example` (with `APP_URL=https://YOUR-APP.vercel.app`), deploy. Then finish step 3.3 (redirect URI) and step 4.4 (push subscription), sign in on the deployed URL, and press **Settings → Start push notifications**. `vercel.json` schedules a daily job that renews the Gmail watch (it expires after 7 days) and catches up on anything missed.
+
+## How it works
+
+- **New email** → Gmail publishes to Pub/Sub → `/api/gmail/webhook` → Gmail history API → messages stored in `emails`, matched to a client by address (client auto-created). Promotions/social/updates, `no-reply` senders and mailing lists are skipped.
+- **Drafting**: for the newest inbound message in each thread, Claude gets the thread, the client's earlier emails, client notes, linked project details, open projects and Leonel's style examples, and returns a reply plus an optional project suggestion. The prompt (`src/lib/claude.ts`) enforces the rules: Leonel's tone, sign-off "Leonel / The Event Rental Guys", **never offer delivery or pickup dates**, no invented prices or availability (uses `[PLACEHOLDERS]` instead).
+- **Accept** sends the reply in the same Gmail thread (`In-Reply-To`/`References` headers, to the client's `Reply-To` if set) and records it in history. The draft is claimed first, so a double-click can't send twice.
+- **Decline** discards. **Review** lets Leonel edit or chat with Claude; edits are saved as status `revised`.
+- If Leonel replies from Gmail directly, the open draft for that thread is marked superseded automatically.
+- Marking a contact "Not a client" on their profile stops drafts for that address.
+- Linking an email to a project links its whole thread; later emails in the thread inherit the project.
+
+## Scripts
+
+```bash
+npm run dev     # local dev server
+npm run build   # production build
+npm test        # unit tests for email parsing / reply building
+npm run lint
+```
