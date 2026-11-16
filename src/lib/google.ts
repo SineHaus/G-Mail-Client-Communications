@@ -2,7 +2,7 @@ import "server-only";
 import { db, must } from "./db";
 import { env } from "./env";
 import type { GmailMessage } from "./email-parse";
-import { assertAllowedGmailCall, GMAIL_SCOPES, grantedScopesAreSafe, LOGIN_SCOPES, loginScopesAreSafe } from "./gmail-policy";
+import { assertAllowedGmailCall, GMAIL_SCOPES, grantedScopesAreSafe, isGmailRateLimit, LOGIN_SCOPES, loginScopesAreSafe } from "./gmail-policy";
 import { decryptToken, encryptToken } from "./token-crypto";
 
 export const redirectUri = () => `${env.appUrl()}/api/auth/callback`;
@@ -55,21 +55,51 @@ async function tokenRequest(body: Record<string, string>): Promise<TokenResponse
   return res.json();
 }
 
+export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Waits before retrying a call Gmail refused for quota (each mailbox has a per-minute budget).
+ * About a minute in total, so the per-minute window has reset by the last try.
+ */
+const RATE_LIMIT_WAITS_MS = [2_000, 8_000, 20_000, 35_000];
+
+export class GmailRateLimitError extends Error {
+  status: number;
+  constructor(status: number, path: string) {
+    super(`Gmail is limiting how fast this inbox can be read right now. Wait a minute, then try again. (Gmail API ${status} on ${path.split("?")[0]})`);
+    this.status = status;
+  }
+}
+
 async function gmailFetch<T>(accessToken: string, path: string, init?: RequestInit): Promise<T> {
   // Hard guard: refuse anything that isn't on the read-only + send allowlist (see gmail-policy.ts).
-  assertAllowedGmailCall(init?.method ?? "GET", path);
-  const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, {
-    ...init,
-    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", ...init?.headers },
-    cache: "no-store",
-  });
-  if (!res.ok) {
-    const err = new Error(`Gmail API ${res.status} on ${path}: ${await res.text()}`) as Error & { status: number };
+  const method = init?.method ?? "GET";
+  assertAllowedGmailCall(method, path);
+  // Reads and the push watch are retried after a rate limit; a send is never retried automatically.
+  const retryable = method === "GET" || path === "watch";
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, {
+      ...init,
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json", ...init?.headers },
+      cache: "no-store",
+    });
+    if (res.ok) {
+      const text = await res.text();
+      return (text ? JSON.parse(text) : {}) as T;
+    }
+    const body = await res.text();
+    if (isGmailRateLimit(res.status, body)) {
+      if (retryable && attempt < RATE_LIMIT_WAITS_MS.length) {
+        const retryAfter = Number(res.headers.get("retry-after"));
+        await sleep(retryAfter > 0 ? Math.min(retryAfter * 1000, 60_000) : RATE_LIMIT_WAITS_MS[attempt]);
+        continue;
+      }
+      throw new GmailRateLimitError(res.status, path);
+    }
+    const err = new Error(`Gmail API ${res.status} on ${path}: ${body}`) as Error & { status: number };
     err.status = res.status;
     throw err;
   }
-  const text = await res.text();
-  return (text ? JSON.parse(text) : {}) as T;
 }
 
 /** Sign-in: who is this? (Google-verified email). No refresh token is kept. */

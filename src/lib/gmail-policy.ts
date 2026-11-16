@@ -47,3 +47,12 @@ export function grantedScopesAreSafe(scope: string | undefined): boolean {
   const granted = scope.split(/\s+/).filter(Boolean);
   return GMAIL_SCOPES.every((s) => granted.includes(s)) && granted.every((s) => (GMAIL_SCOPES as readonly string[]).includes(s));
 }
+
+/**
+ * True if Gmail refused a call because this mailbox used up its per-minute quota (HTTP 429, or 403
+ * with a rate-limit reason). Those calls are safe to retry after a pause; nothing was done.
+ */
+export function isGmailRateLimit(status: number, body: string): boolean {
+  if (status === 429) return true;
+  return status === 403 && /rateLimitExceeded|userRateLimitExceeded|RATE_LIMIT_EXCEEDED|Quota exceeded/i.test(body);
+}

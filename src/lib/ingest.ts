@@ -1,7 +1,7 @@
 import "server-only";
 import { db, must } from "./db";
 import { env } from "./env";
-import { gmailFor, getAccount } from "./google";
+import { GmailRateLimitError, gmailFor, getAccount, sleep } from "./google";
 import { extractBody, header, inboundContact, mentionsProjectNumber, parseAddressList, stripQuoted, type GmailMessage } from "./email-parse";
 import { audit } from "./audit";
 
@@ -220,24 +220,51 @@ export async function pickDraftCandidates(accountId: string, results: IngestResu
   return out;
 }
 
+/**
+ * Pause between message fetches. Each fetch costs 5 of the mailbox's 6,000 Gmail quota units per
+ * minute; at this pace an import uses under half of that, leaving room for Sync now, push and sends.
+ */
+const FETCH_PACE_MS = 120;
+
+/**
+ * Fetch and store messages in the order given (oldest first), one at a time, so an import that is
+ * cut short keeps everything it already stored. Messages already stored are not fetched again.
+ * A Gmail rate limit that outlasts the retries stops the import early instead of failing it.
+ */
 async function ingestIds(accountId: string, ids: string[], myEmail: string) {
   const gmail = gmailFor(accountId);
+  const known = new Set<string>();
+  for (let i = 0; i < ids.length; i += 200) {
+    const rows = must(
+      await db().from("emails").select("gmail_message_id").eq("account_id", accountId).in("gmail_message_id", ids.slice(i, i + 200)),
+    ) as { gmail_message_id: string }[];
+    for (const r of rows) known.add(r.gmail_message_id);
+  }
   const results: IngestResult[] = [];
-  const messages: GmailMessage[] = [];
+  let stoppedEarly: string | null = null;
   for (const id of ids) {
+    if (known.has(id)) continue;
+    let msg: GmailMessage;
     try {
-      messages.push(await gmail.getMessage(id));
+      msg = await gmail.getMessage(id);
     } catch (e) {
       if ((e as { status?: number }).status === 404) continue; // deleted since
+      if (e instanceof GmailRateLimitError) {
+        stoppedEarly = e.message;
+        break;
+      }
       throw e;
     }
+    results.push(await ingestMessage(accountId, msg, myEmail));
+    await sleep(FETCH_PACE_MS);
   }
-  messages.sort((a, b) => Number(a.internalDate) - Number(b.internalDate));
-  for (const m of messages) results.push(await ingestMessage(accountId, m, myEmail));
-  return results;
+  return { results, stoppedEarly };
 }
 
-/** Initial / manual import for one account: recent inbox + sent mail. Returns email ids that need drafts. */
+/**
+ * Initial / manual import for one account: recent inbox + sent mail. Returns email ids that need
+ * drafts, and `stoppedEarly` (a message) if Gmail's rate limit cut it short; running it again resumes.
+ */
 export async function syncRecent(accountId: string, days = 14, max = 150) {
   const acct = await getAccount(accountId);
   const gmail = gmailFor(accountId);
@@ -246,12 +273,18 @@ export async function syncRecent(accountId: string, days = 14, max = 150) {
     throw new Error(`Token for ${acct.email_address} belongs to ${profile.emailAddress}; refusing to sync.`);
   }
   const ids = await gmail.listMessageIds(`newer_than:${days}d -in:chats -in:drafts -in:spam -in:trash`, max);
-  const results = await ingestIds(accountId, ids.map((m) => m.id), acct.email_address);
+  // Gmail lists newest first; store oldest first so threads build up in order.
+  const { results, stoppedEarly } = await ingestIds(accountId, ids.map((m) => m.id).reverse(), acct.email_address);
   await db()
     .from("gmail_accounts")
-    .update({ history_id: acct.history_id ?? profile.historyId, last_synced_at: new Date().toISOString(), last_error: null })
+    // A cut-short first import leaves history_id empty, so the next check runs this import again (and resumes).
+    .update({
+      history_id: acct.history_id ?? (stoppedEarly ? null : profile.historyId),
+      last_synced_at: new Date().toISOString(),
+      last_error: null,
+    })
     .eq("id", accountId);
-  return { results, draftEmailIds: await pickDraftCandidates(accountId, results) };
+  return { results, stoppedEarly, draftEmailIds: await pickDraftCandidates(accountId, results) };
 }
 
 /** Incremental sync for one account using Gmail history (push webhook, cron and "Sync now"). */
@@ -270,10 +303,11 @@ export async function syncHistory(accountId: string) {
     }
     throw e;
   }
-  const results = await ingestIds(accountId, added.ids, acct.email_address);
+  const { results, stoppedEarly } = await ingestIds(accountId, added.ids, acct.email_address);
   await db()
     .from("gmail_accounts")
-    .update({ history_id: added.historyId, last_synced_at: new Date().toISOString(), last_error: null })
+    // Cut short by the rate limit: keep the old history_id so the next check picks up the rest.
+    .update({ history_id: stoppedEarly ? acct.history_id : added.historyId, last_synced_at: new Date().toISOString(), last_error: null })
     .eq("id", accountId);
-  return { results, draftEmailIds: await pickDraftCandidates(accountId, results) };
+  return { results, stoppedEarly, draftEmailIds: await pickDraftCandidates(accountId, results) };
 }
