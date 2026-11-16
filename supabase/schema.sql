@@ -256,3 +256,6 @@ revoke execute on function new_draft_version(uuid, text, text, text) from public
 revoke execute on function visible_project_ids(uuid[]) from public, anon, authenticated;
 grant execute on function new_draft_version(uuid, text, text, text) to service_role;
 grant execute on function visible_project_ids(uuid[]) to service_role;
+
+-- Make the new tables visible to the API immediately (refreshes Supabase's schema cache).
+notify pgrst, 'reload schema';
