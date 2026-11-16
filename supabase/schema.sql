@@ -29,7 +29,7 @@ begin
     if to_regclass('public.' || t) is not null then
       execute format('select exists (select 1 from %I)', t) into has_rows;
       if has_rows then
-        raise exception 'An older version of the schema with data in table "%" is present. Not changing anything; ask for a migration.', t;
+        raise exception 'An older version of the schema with data in table "%" is present. Not changing anything. Run supabase/migrations/003_team_and_shared_projects.sql first, then this file again.', t;
       end if;
     end if;
   end loop;
