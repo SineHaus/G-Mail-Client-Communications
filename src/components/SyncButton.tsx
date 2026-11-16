@@ -2,7 +2,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { syncNowAction } from "@/app/actions";
-import { timeAgo } from "@/lib/format";
+import { syncSummary, timeAgo } from "@/lib/format";
 
 export default function SyncButton({ lastSynced }: { lastSynced: string | null }) {
   const router = useRouter();
@@ -16,14 +16,9 @@ export default function SyncButton({ lastSynced }: { lastSynced: string | null }
       onClick={() =>
         start(async () => {
           const r = await syncNowAction();
-          setMsg(
-            r.ok
-              ? `${r.data?.imported ?? 0} new · ${r.data?.drafted ?? 0} drafted` +
-                  (r.data?.skipped ? ` · ${r.data.skipped} skipped as automated` : "")
-              : r.error,
-          );
+          setMsg(r.ok ? syncSummary(r.data) : r.error);
           router.refresh();
-          setTimeout(() => setMsg(null), 6000);
+          setTimeout(() => setMsg(null), 12000);
         })
       }
     >

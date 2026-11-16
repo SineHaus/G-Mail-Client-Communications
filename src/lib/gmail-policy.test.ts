@@ -94,3 +94,14 @@ test("no source file contains label-changing Gmail code or calls Gmail outside g
     }
   }
 });
+
+test("rate-limit errors are recognised (429, or 403 with a rate-limit reason) and other 403s are not", async () => {
+  const { isGmailRateLimit } = await import("./gmail-policy.ts");
+  assert.equal(isGmailRateLimit(429, ""), true);
+  assert.equal(
+    isGmailRateLimit(403, '{"error":{"code":403,"message":"Quota exceeded for quota metric \'Total Query Cost\'","errors":[{"reason":"rateLimitExceeded"}]}}'),
+    true,
+  );
+  assert.equal(isGmailRateLimit(403, '{"error":{"code":403,"message":"Insufficient Permission","errors":[{"reason":"insufficientPermissions"}]}}'), false);
+  assert.equal(isGmailRateLimit(500, "rateLimitExceeded"), false);
+});

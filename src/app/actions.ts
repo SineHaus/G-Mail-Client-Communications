@@ -324,12 +324,14 @@ export async function syncNowAction(accountId?: string) {
     // An inbox with nothing stored yet (e.g. everything was skipped on its first import) gets the
     // 14-day import again; already-stored messages are skipped, so this is safe to repeat.
     const stored = await db().from("emails").select("id", { count: "exact", head: true }).eq("account_id", acct);
-    const { draftEmailIds, results } = stored.count ? await syncHistory(acct) : await syncRecent(acct);
+    const { draftEmailIds, results, stoppedEarly } = stored.count ? await syncHistory(acct) : await syncRecent(acct);
     await generateDrafts(acct, draftEmailIds);
     return {
       imported: results.filter((x) => x.status === "inserted").length,
       drafted: draftEmailIds.length,
       skipped: results.filter((x) => x.status === "skipped" && x.reason === "bulk/automated").length,
+      // Gmail's per-minute limit cut the import short; what was stored is kept and the next sync resumes.
+      stoppedEarly,
     };
   });
   refreshAll();

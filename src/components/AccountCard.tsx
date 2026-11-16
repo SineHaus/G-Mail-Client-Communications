@@ -2,7 +2,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { disconnectAccountAction, renameAccountAction, startWatchAction, switchAccountAction, syncNowAction } from "@/app/actions";
-import { fmtDate } from "@/lib/format";
+import { fmtDate, syncSummary } from "@/lib/format";
 
 type A = {
   id: string;
@@ -23,10 +23,10 @@ export default function AccountCard({ account: a, isCurrent, isOwner, canEdit }:
   // eslint-disable-next-line react-hooks/purity -- display-only comparison against the current time
   const watchOk = a.watchExpiration && new Date(a.watchExpiration).getTime() > Date.now();
 
-  const act = (fn: () => Promise<{ ok: boolean; error?: string }>, okMsg: string) =>
+  const act = <T,>(fn: () => Promise<{ ok: boolean; error?: string; data?: T }>, okMsg: string | ((data?: T) => string)) =>
     start(async () => {
       const r = await fn();
-      setMsg(r.ok ? okMsg : r.error ?? "Failed");
+      setMsg(r.ok ? (typeof okMsg === "function" ? okMsg(r.data) : okMsg) : r.error ?? "Failed");
       router.refresh();
     });
 
@@ -74,7 +74,7 @@ export default function AccountCard({ account: a, isCurrent, isOwner, canEdit }:
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-stone-100 pt-3">
         {a.connected ? (
           <>
-            {canEdit && <button className="btn-secondary" disabled={pending} onClick={() => act(() => syncNowAction(a.id), "Synced")}>↻ Sync now</button>}
+            {canEdit && <button className="btn-secondary" disabled={pending} onClick={() => act(() => syncNowAction(a.id), syncSummary)}>↻ Sync now</button>}
             {canEdit && <button className="btn-secondary" disabled={pending} onClick={() => act(() => startWatchAction(a.id), "Push notifications on")}>
               {watchOk ? "Renew push now" : "Start push notifications"}
             </button>}
