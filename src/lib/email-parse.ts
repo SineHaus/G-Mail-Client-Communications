@@ -161,3 +161,47 @@ export function mentionsProjectNumber(subject: string, body: string, projectNumb
   const inSubject = new RegExp(`(?<![\\w$#.-])${esc}(?![\\w-]|\\.\\d)`, "i");
   return labelled.test(subject) || labelled.test(body) || inSubject.test(subject);
 }
+
+// ---------- Who an inbound email is really from ----------
+
+/** Gmail tabs that are marketing, never client mail. (Updates is allowed: form notifications land there.) */
+const MARKETING_LABELS = ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS"];
+const AUTOMATED_SENDER = /(no-?reply|do-?not-?reply|mailer-daemon|postmaster|notifications?@|bounce)/i;
+const domainOf = (email: string) => email.split("@")[1] ?? "";
+
+export type InboundContact =
+  | { skip: string }
+  | { contact: { name: string; email: string }; viaForm: boolean };
+
+/**
+ * Decide whether an inbound email is client mail, and who the client is.
+ *
+ * - Normal mail from a person: the sender is the client.
+ * - Website form notifications ("New Form Submitted") and chat-bot transcripts come from a
+ *   no-reply / notifications address with the customer in Reply-To. The customer is the client
+ *   (approved replies already go to Reply-To). Counted only when the Reply-To person is on a
+ *   different domain from the sender and from this inbox, so a company's own notifications and
+ *   newsletters (which reply to themselves) are still skipped.
+ * - Everything else automated (Promotions/Social/Forums tabs, no-reply senders, mailing lists) is skipped.
+ */
+export function inboundContact(msg: GmailMessage, myEmail: string): InboundContact {
+  const from = parseAddressList(header(msg, "From"))[0];
+  if (!from) return { skip: "no sender" };
+  const labels = msg.labelIds ?? [];
+  if (labels.some((l) => MARKETING_LABELS.includes(l))) return { skip: "bulk/automated" };
+
+  const automated =
+    labels.includes("CATEGORY_UPDATES") || AUTOMATED_SENDER.test(from.email) || !!header(msg, "List-Unsubscribe");
+  if (!automated) return { contact: from, viaForm: false };
+
+  const me = myEmail.toLowerCase();
+  const replyTo = parseAddressList(header(msg, "Reply-To"))[0];
+  const isCustomer =
+    !!replyTo &&
+    replyTo.email !== from.email &&
+    replyTo.email !== me &&
+    !AUTOMATED_SENDER.test(replyTo.email) &&
+    domainOf(replyTo.email) !== domainOf(from.email) &&
+    domainOf(replyTo.email) !== domainOf(me);
+  return isCustomer ? { contact: replyTo, viaForm: true } : { skip: "bulk/automated" };
+}

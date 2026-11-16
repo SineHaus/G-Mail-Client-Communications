@@ -2,14 +2,12 @@ import "server-only";
 import { db, must } from "./db";
 import { env } from "./env";
 import { gmailFor, getAccount } from "./google";
-import { extractBody, header, mentionsProjectNumber, parseAddressList, stripQuoted, type GmailMessage } from "./email-parse";
+import { extractBody, header, inboundContact, mentionsProjectNumber, parseAddressList, stripQuoted, type GmailMessage } from "./email-parse";
 import { audit } from "./audit";
 
 // Every function here works on ONE Gmail account and scopes every query by account_id.
 
 const SKIP_LABELS = ["DRAFT", "SPAM", "TRASH", "CHAT"];
-const BULK_LABELS = ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_UPDATES", "CATEGORY_FORUMS"];
-const BULK_SENDER = /(no-?reply|do-?not-?reply|mailer-daemon|postmaster|notifications?@|bounce)/i;
 
 export type IngestResult =
   | { status: "skipped"; reason: string }
@@ -52,11 +50,13 @@ export async function ingestMessage(accountId: string, msg: GmailMessage, myEmai
   const direction: "inbound" | "outbound" = from.email === me ? "outbound" : "inbound";
 
   let counterpart: { name: string; email: string } | undefined;
+  // For website form notifications the customer (Reply-To) is shown as the sender, not the no-reply address.
+  let shownFrom = from;
   if (direction === "inbound") {
-    const isBulk =
-      labels.some((l) => BULK_LABELS.includes(l)) || BULK_SENDER.test(from.email) || !!header(msg, "List-Unsubscribe");
-    if (isBulk) return { status: "skipped", reason: "bulk/automated" };
-    counterpart = from;
+    const who = inboundContact(msg, myEmail);
+    if ("skip" in who) return { status: "skipped", reason: who.skip };
+    counterpart = who.contact;
+    shownFrom = who.contact;
   } else {
     counterpart = [...parseAddressList(header(msg, "To")), ...parseAddressList(header(msg, "Cc"))].find(
       (a) => a.email !== me,
@@ -98,8 +98,8 @@ export async function ingestMessage(accountId: string, msg: GmailMessage, myEmai
     client_id: client.id,
     project_id: projectId,
     direction,
-    from_address: from.email,
-    from_name: from.name || null,
+    from_address: shownFrom.email,
+    from_name: shownFrom.name || null,
     to_addresses: header(msg, "To"),
     subject,
     body,

@@ -88,3 +88,47 @@ test("mentionsProjectNumber finds project references but not prices or quantitie
   assert.equal(m("Re: tents", "nothing here", "1042"), false);
   assert.equal(m("12", "#12", "12"), false); // numbers shorter than 3 digits are ignored
 });
+
+// ---------- inboundContact: website forms vs automated mail ----------
+import { inboundContact } from "./email-parse.ts";
+
+const mail = (headers: Record<string, string>, labelIds: string[] = ["INBOX"]): GmailMessage => ({
+  id: "m1",
+  threadId: "t1",
+  labelIds,
+  payload: { headers: Object.entries(headers).map(([name, value]) => ({ name, value })) },
+});
+const ME = "support@theeventrentalguys.com";
+
+test("inboundContact: a normal client email is from its sender", () => {
+  assert.deepEqual(inboundContact(mail({ From: "Maria Lopez <maria@gmail.com>" }), ME), {
+    contact: { name: "Maria Lopez", email: "maria@gmail.com" },
+    viaForm: false,
+  });
+});
+
+test("inboundContact: a website form notification counts, with the customer from Reply-To", () => {
+  const form = mail(
+    { From: "Website <no-reply@forms.example.com>", "Reply-To": "Jane Doe <jane@yahoo.com>", Subject: "New Form Submitted" },
+    ["INBOX", "CATEGORY_UPDATES"],
+  );
+  assert.deepEqual(inboundContact(form, ME), { contact: { name: "Jane Doe", email: "jane@yahoo.com" }, viaForm: true });
+});
+
+test("inboundContact: automated mail with no real Reply-To person is still skipped", () => {
+  const skip = { skip: "bulk/automated" };
+  assert.deepEqual(inboundContact(mail({ From: "no-reply@bank.com" }), ME), skip);
+  // A newsletter that replies to its own domain.
+  assert.deepEqual(
+    inboundContact(mail({ From: "news@brand.com", "Reply-To": "hello@brand.com", "List-Unsubscribe": "<mailto:u@brand.com>" }), ME),
+    skip,
+  );
+  // Promotions/Social/Forums tabs are never client mail, even with a Reply-To.
+  assert.deepEqual(
+    inboundContact(mail({ From: "deals@shop.com", "Reply-To": "jane@yahoo.com" }, ["INBOX", "CATEGORY_PROMOTIONS"]), ME),
+    skip,
+  );
+  // Reply-To pointing back at our own domain or a no-reply address.
+  assert.deepEqual(inboundContact(mail({ From: "no-reply@forms.example.com", "Reply-To": "leo@theeventrentalguys.com" }), ME), skip);
+  assert.deepEqual(inboundContact(mail({ From: "no-reply@forms.example.com", "Reply-To": "noreply@other.com" }), ME), skip);
+});
