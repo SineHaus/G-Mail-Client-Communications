@@ -46,7 +46,7 @@ src/
   lib/email-parse.ts    MIME parsing, quote stripping, reply building (unit-tested)
   proxy.ts              login guard for every page and API route
 supabase/schema.sql     database schema for a fresh install
-supabase/migrations/002_multi_account.sql   upgrade from the earlier single-account schema
+supabase/migrations/003_team_and_shared_projects.sql   upgrade a database that already holds data from the earlier multi-account schema
 ```
 
 ## Setup, step by step
@@ -93,6 +93,7 @@ Push needs a public HTTPS URL, so it only works on the deployed app. Locally, us
 1. Create a project at <https://supabase.com/dashboard>.
 2. **SQL Editor → New query**, paste the whole of `supabase/schema.sql`, **Run**.
    It's safe to run again. If an older, empty version of the schema is there, it's replaced; if an older version holds data, it stops without changing anything.
+   If it stops because an older version holds data, first run `supabase/migrations/003_team_and_shared_projects.sql` the same way (it keeps all your data), then run `supabase/schema.sql` again.
 3. **Project Settings → API**: copy the **Project URL** → `SUPABASE_URL` and the **service_role** secret → `SUPABASE_SERVICE_ROLE_KEY`. (Row-level security is on with no policies, so the public anon key can't read anything; only this server can.)
 
 ### 6. Anthropic
