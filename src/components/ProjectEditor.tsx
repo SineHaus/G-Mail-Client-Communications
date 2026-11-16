@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { updateProjectAction } from "@/app/actions";
 import type { Project } from "@/lib/types";
 
-export default function ProjectEditor({ project, clients }: { project: Project; clients: { id: string; label: string }[] }) {
+export default function ProjectEditor({ project, clients, canEdit }: { project: Project; clients: { id: string; label: string }[]; canEdit: boolean }) {
   const router = useRouter();
   const init = {
     project_name: project.project_name,
@@ -20,7 +20,7 @@ export default function ProjectEditor({ project, clients }: { project: Project; 
   const dirty = JSON.stringify(f) !== JSON.stringify(init);
 
   return (
-    <div className="space-y-3">
+    <fieldset disabled={!canEdit} className="space-y-3">
       <div className="flex gap-2">
         <label className="w-24">
           <span className="label">Number</span>
@@ -57,7 +57,7 @@ export default function ProjectEditor({ project, clients }: { project: Project; 
         <span className="label">Notes (Claude sees these)</span>
         <textarea className="input min-h-28" placeholder="Items, quantities, venue, quote…" value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} />
       </label>
-      <div className="flex items-center gap-2">
+      {canEdit && <div className="flex items-center gap-2">
         <button
           className="btn-brand"
           disabled={!dirty || pending}
@@ -77,7 +77,7 @@ export default function ProjectEditor({ project, clients }: { project: Project; 
           Save
         </button>
         {msg && <span className="text-xs text-stone-500">{msg}</span>}
-      </div>
-    </div>
+      </div>}
+    </fieldset>
   );
 }

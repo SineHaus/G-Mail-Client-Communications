@@ -32,7 +32,7 @@ export default async function LoginPage({ searchParams }: PageProps<"/login">) {
           </svg>
           Sign in with Google
         </a>
-        <p className="mt-4 text-xs text-stone-400">Connects your Gmail. Nothing is ever sent without your approval.</p>
+        <p className="mt-4 text-xs text-stone-400">Sign in with your TERG Google account. Signing in only shares your name and email address, not your mailbox.</p>
       </div>
     </main>
   );

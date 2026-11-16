@@ -2,7 +2,8 @@ import "server-only";
 import { db, must } from "./db";
 import { env } from "./env";
 import { gmailFor, getAccount } from "./google";
-import { extractBody, header, parseAddressList, stripQuoted, type GmailMessage } from "./email-parse";
+import { extractBody, header, mentionsProjectNumber, parseAddressList, stripQuoted, type GmailMessage } from "./email-parse";
+import { audit } from "./audit";
 
 // Every function here works on ONE Gmail account and scopes every query by account_id.
 
@@ -65,7 +66,7 @@ export async function ingestMessage(accountId: string, msg: GmailMessage, myEmai
 
   const client = await findOrCreateClient(accountId, counterpart.email, counterpart.name);
 
-  // New messages inherit the project already linked to their thread (same account only).
+  // New messages inherit the project already linked to their thread (same account only)…
   const threadProject = must(
     await db()
       .from("emails")
@@ -77,19 +78,31 @@ export async function ingestMessage(accountId: string, msg: GmailMessage, myEmai
   ) as { project_id: string }[];
 
   const sentAt = new Date(Number(msg.internalDate ?? Date.now())).toISOString();
+  const subject = header(msg, "Subject");
+  const body = stripQuoted(extractBody(msg));
+  // …otherwise auto-link by a project number in the email, or the client's only open project.
+  let projectId: string | null = threadProject[0]?.project_id ?? null;
+  let autoLinked: string | null = null;
+  if (!projectId) {
+    const found = await autoLinkProject(subject, body, client.id);
+    if (found) {
+      projectId = found.id;
+      autoLinked = found.reason;
+    }
+  }
   const row = {
     account_id: accountId,
     gmail_message_id: msg.id,
     gmail_thread_id: msg.threadId,
     message_id_header: header(msg, "Message-ID") || header(msg, "Message-Id") || null,
     client_id: client.id,
-    project_id: threadProject[0]?.project_id ?? null,
+    project_id: projectId,
     direction,
     from_address: from.email,
     from_name: from.name || null,
     to_addresses: header(msg, "To"),
-    subject: header(msg, "Subject"),
-    body: stripQuoted(extractBody(msg)),
+    subject,
+    body,
     snippet: msg.snippet ?? null,
     sent_at: sentAt,
     // Read/unread is tracked only in Supabase. Gmail's UNREAD label is never read from or written to.
@@ -106,13 +119,59 @@ export async function ingestMessage(accountId: string, msg: GmailMessage, myEmai
     throw new Error(ins.error.message);
   }
 
-  // Leonel replied (from Gmail or from here) → any open draft for earlier emails in the thread is stale.
-  if (direction === "outbound") await supersedeThreadDrafts(accountId, msg.threadId, sentAt);
+  const emailId = (ins.data as { id: string }).id;
+  if (autoLinked) {
+    // Link the rest of the thread too (same account only).
+    await db()
+      .from("emails")
+      .update({ project_id: projectId })
+      .eq("account_id", accountId)
+      .eq("gmail_thread_id", msg.threadId)
+      .is("project_id", null);
+    await audit("system", "auto_linked_project", { accountId, emailId, detail: autoLinked });
+  }
 
-  return { status: "inserted", emailId: (ins.data as { id: string }).id, direction, threadId: msg.threadId, sentAt };
+  // A reply was sent from this mailbox (in Gmail, or from here) → open drafts for earlier emails are done.
+  if (direction === "outbound") await closeThreadDrafts(accountId, msg.threadId, sentAt);
+
+  return { status: "inserted", emailId, direction, threadId: msg.threadId, sentAt };
 }
 
-/** Mark open drafts on emails in a thread sent before `before` as superseded. */
+/**
+ * Auto-link: a project number mentioned in the email ("#1042", "project 1042", or the number in the
+ * subject), else the client's only open project. Projects are shared across TERG.
+ */
+export async function autoLinkProject(subject: string, body: string, clientId: string): Promise<{ id: string; reason: string } | null> {
+  // isolation-exempt: matching numbers against every TERG project is the point of auto-linking; nothing
+  // here is shown to anyone, and linking an email of this account makes that project visible to it.
+  const projects = must(await db().from("projects").select("id,project_number,client_id,status")) as {
+    id: string;
+    project_number: string;
+    client_id: string | null;
+    status: string;
+  }[];
+  const hit = projects.find((p) => mentionsProjectNumber(subject, body, p.project_number));
+  if (hit) return { id: hit.id, reason: `project #${hit.project_number} mentioned in the email` };
+  const open = projects.filter((p) => p.client_id === clientId && (p.status === "inquiry" || p.status === "booked"));
+  if (open.length === 1) return { id: open[0].id, reason: `client's only open project #${open[0].project_number}` };
+  return null;
+}
+
+/** A replied-to thread: open drafts on earlier emails are closed as "handled outside the dashboard". */
+async function closeThreadDrafts(accountId: string, threadId: string, before: string) {
+  const earlier = must(
+    await db().from("emails").select("id").eq("account_id", accountId).eq("gmail_thread_id", threadId).lt("sent_at", before),
+  ) as { id: string }[];
+  if (!earlier.length) return;
+  await db()
+    .from("drafts")
+    .update({ status: "declined", decided_by: "replied in Gmail", decided_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq("account_id", accountId)
+    .in("email_id", earlier.map((e) => e.id))
+    .eq("status", "pending");
+}
+
+/** Mark open drafts on emails in a thread sent before `before` as superseded (a newer email arrived). */
 export async function supersedeThreadDrafts(accountId: string, threadId: string, before: string, exceptEmailId?: string) {
   const earlier = must(
     await db().from("emails").select("id").eq("account_id", accountId).eq("gmail_thread_id", threadId).lt("sent_at", before),
@@ -124,7 +183,7 @@ export async function supersedeThreadDrafts(accountId: string, threadId: string,
     .update({ status: "superseded", updated_at: new Date().toISOString() })
     .eq("account_id", accountId)
     .in("email_id", ids)
-    .in("status", ["pending", "revised"]);
+    .eq("status", "pending");
 }
 
 /**
@@ -152,7 +211,7 @@ export async function pickDraftCandidates(accountId: string, results: IngestResu
     if (latest.clients?.ignored) continue;
     if (new Date(latest.sent_at).getTime() < cutoff) continue;
     const open = must(
-      await db().from("drafts").select("id").eq("account_id", accountId).eq("email_id", latest.id).in("status", ["pending", "revised"]).limit(1),
+      await db().from("drafts").select("id").eq("account_id", accountId).eq("email_id", latest.id).in("status", ["pending", "sending"]).limit(1),
     ) as { id: string }[];
     if (open.length) continue;
     await supersedeThreadDrafts(accountId, threadId, latest.sent_at, latest.id);

@@ -14,7 +14,7 @@ type A = {
   lastError: string | null;
 };
 
-export default function AccountCard({ account: a, isCurrent }: { account: A; isCurrent: boolean }) {
+export default function AccountCard({ account: a, isCurrent, isOwner, canEdit }: { account: A; isCurrent: boolean; isOwner: boolean; canEdit: boolean }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [msg, setMsg] = useState<string | null>(null);
@@ -58,7 +58,7 @@ export default function AccountCard({ account: a, isCurrent }: { account: A; isC
         )}
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      {isOwner && <div className="mt-3 flex flex-wrap items-center gap-2">
         <input
           className="input w-56 py-1.5"
           placeholder="Display / sender name (optional)"
@@ -69,16 +69,16 @@ export default function AccountCard({ account: a, isCurrent }: { account: A; isC
         <button className="btn-ghost" disabled={pending} onClick={() => act(() => renameAccountAction(a.id, name), "Saved")}>
           Save name
         </button>
-      </div>
+      </div>}
 
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-stone-100 pt-3">
         {a.connected ? (
           <>
-            <button className="btn-secondary" disabled={pending} onClick={() => act(() => syncNowAction(a.id), "Synced")}>↻ Sync now</button>
-            <button className="btn-secondary" disabled={pending} onClick={() => act(() => startWatchAction(a.id), "Push notifications on")}>
+            {canEdit && <button className="btn-secondary" disabled={pending} onClick={() => act(() => syncNowAction(a.id), "Synced")}>↻ Sync now</button>}
+            {canEdit && <button className="btn-secondary" disabled={pending} onClick={() => act(() => startWatchAction(a.id), "Push notifications on")}>
               {watchOk ? "Renew push now" : "Start push notifications"}
-            </button>
-            {confirmDisconnect ? (
+            </button>}
+            {!isOwner ? null : confirmDisconnect ? (
               <>
                 <button className="btn btn-danger border-red-300" disabled={pending} onClick={() => act(() => disconnectAccountAction(a.id), "Disconnected")}>
                   Yes, disconnect and remove tokens
@@ -89,8 +89,10 @@ export default function AccountCard({ account: a, isCurrent }: { account: A; isC
               <button className="btn-danger" disabled={pending} onClick={() => setConfirmDisconnect(true)}>Disconnect</button>
             )}
           </>
-        ) : (
+        ) : isOwner ? (
           <a className="btn-brand" href={`/api/auth/google?mode=add&hint=${encodeURIComponent(a.email)}`}>Reconnect</a>
+        ) : (
+          <span className="text-xs text-stone-500">Ask Leo to reconnect it.</span>
         )}
         {pending && <span className="text-xs text-stone-500">Working…</span>}
         {msg && !pending && <span className="text-xs text-stone-500">{msg}</span>}

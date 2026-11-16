@@ -144,3 +144,20 @@ export function buildReplyRaw(opts: {
     .replace(/.{76}/g, "$&\r\n");
   return encodeB64Url(`${headers.join("\r\n")}\r\n\r\n${bodyB64}`);
 }
+
+/**
+ * Does the email mention this project number? Matches "#1042", "project 1042", "job no. 1042",
+ * "order #1042", "quote 1042", "invoice 1042", or the bare number in the subject. Avoids matching
+ * prices, quantities and longer numbers ("$1042", "1042 chairs" in the body, "21042").
+ */
+export function mentionsProjectNumber(subject: string, body: string, projectNumber: string): boolean {
+  const n = projectNumber.trim().replace(/^#/, "");
+  if (n.length < 3) return false;
+  const esc = n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const labelled = new RegExp(
+    `(?:#\\s?|\\b(?:project|job|order|quote|invoice|event)\\s*(?:no\\.?|number|num|#)?\\s*:?\\s*#?)${esc}(?![\\w-])`,
+    "i",
+  );
+  const inSubject = new RegExp(`(?<![\\w$#.-])${esc}(?![\\w-]|\\.\\d)`, "i");
+  return labelled.test(subject) || labelled.test(body) || inSubject.test(subject);
+}

@@ -6,7 +6,8 @@ import { fmtDate, STATUS_STYLES } from "@/lib/format";
 import ClientEditor from "@/components/ClientEditor";
 import EmailHistory from "@/components/EmailHistory";
 import AddProjectButton from "@/components/AddProjectButton";
-import { getCurrentAccount } from "@/lib/accounts";
+import { getCurrentAccount, visibleProjectIds } from "@/lib/accounts";
+import { can } from "@/lib/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -17,15 +18,19 @@ export default async function ClientPage({ params }: PageProps<"/clients/[id]">)
   const res = await db().from("clients").select("*").eq("account_id", acct.id).eq("id", id).maybeSingle();
   if (!res.data) notFound();
   const client = res.data as Client;
+  const canEdit = can(acct.role, "edit");
+  const visible = await visibleProjectIds([acct.id]);
   const [emails, projects, drafts] = await Promise.all([
     db()
       .from("emails")
-      .select("*, projects!emails_project_fk(id,project_name,project_number)")
+      .select("*, projects!emails_project_id_fkey(id,project_name,project_number)")
       .eq("account_id", acct.id)
       .eq("client_id", id)
       .order("sent_at", { ascending: false }),
-    db().from("projects").select("*").eq("account_id", acct.id).eq("client_id", id).order("created_at", { ascending: false }),
-    db().from("drafts").select("id,email_id,status").eq("account_id", acct.id).in("status", ["pending", "revised"]),
+    visible.length
+      ? db().from("projects").select("*").in("id", visible).eq("client_id", id).order("created_at", { ascending: false })
+      : Promise.resolve({ data: [] as Project[] }),
+    db().from("drafts").select("id,email_id,status").eq("account_id", acct.id).eq("status", "pending"),
   ]);
   const list = (emails.data ?? []) as (Email & { projects: Pick<Project, "id" | "project_name" | "project_number"> | null })[];
   const openDrafts = Object.fromEntries(((drafts.data ?? []) as { id: string; email_id: string }[]).map((d) => [d.email_id, d.id]));
@@ -40,12 +45,12 @@ export default async function ClientPage({ params }: PageProps<"/clients/[id]">)
           <div className="card p-4">
             <h1 className="text-lg font-semibold">{client.name || client.email}</h1>
             <p className="mb-4 text-xs text-stone-500">Client since {fmtDate(client.created_at, false)}</p>
-            <ClientEditor client={client} />
+            <ClientEditor client={client} canEdit={canEdit} />
           </div>
           <div className="card p-4">
             <div className="mb-2 flex items-center justify-between">
               <div className="label mb-0">Projects</div>
-              <AddProjectButton clientId={client.id} />
+              {canEdit && <AddProjectButton clientId={client.id} />}
             </div>
             <ul className="space-y-2">
               {((projects.data ?? []) as Project[]).map((p) => (
@@ -64,7 +69,7 @@ export default async function ClientPage({ params }: PageProps<"/clients/[id]">)
         </aside>
         <section>
           <h2 className="mb-3 text-sm font-semibold">Email history ({list.length})</h2>
-          <EmailHistory emails={list} openDrafts={openDrafts} />
+          <EmailHistory emails={list} openDrafts={openDrafts} canEdit={canEdit} />
         </section>
       </div>
     </div>

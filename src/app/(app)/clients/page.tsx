@@ -5,6 +5,7 @@ import type { Client } from "@/lib/types";
 import { timeAgo } from "@/lib/format";
 import SearchBox from "@/components/SearchBox";
 import { getCurrentAccount } from "@/lib/accounts";
+import { requireMember } from "@/lib/team";
 import NoAccount from "@/components/NoAccount";
 
 export const dynamic = "force-dynamic";
@@ -13,8 +14,9 @@ export default async function ClientsPage({ searchParams }: PageProps<"/clients"
   const sp = await searchParams;
   const q = String(sp.q ?? "").trim();
   const showIgnored = sp.ignored === "1";
+  const member = await requireMember();
   const acct = await getCurrentAccount();
-  if (!acct) return <NoAccount />;
+  if (!acct) return <NoAccount isOwner={member.is_owner} />;
 
   let query = db()
     .from("clients")

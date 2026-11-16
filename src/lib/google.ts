@@ -2,22 +2,30 @@ import "server-only";
 import { db, must } from "./db";
 import { env } from "./env";
 import type { GmailMessage } from "./email-parse";
-import { assertAllowedGmailCall, GMAIL_SCOPES, grantedScopesAreSafe } from "./gmail-policy";
+import { assertAllowedGmailCall, GMAIL_SCOPES, grantedScopesAreSafe, LOGIN_SCOPES, loginScopesAreSafe } from "./gmail-policy";
 import { decryptToken, encryptToken } from "./token-crypto";
 
 export const redirectUri = () => `${env.appUrl()}/api/auth/callback`;
 
-export function googleAuthUrl(state: string, loginHint?: string): string {
+/**
+ * purpose "login": identity only (openid email) — signing in gives the app no mailbox access.
+ * purpose "connect": gmail.readonly + gmail.send only — no modify, no full mail access.
+ */
+export function googleAuthUrl(state: string, purpose: "login" | "connect", loginHint?: string): string {
   const p = new URLSearchParams({
     client_id: env.googleClientId(),
     redirect_uri: redirectUri(),
     response_type: "code",
-    scope: GMAIL_SCOPES.join(" "), // gmail.readonly + gmail.send only — no modify, no full mail access
-    access_type: "offline",
-    prompt: "consent select_account", // always return a refresh token; let the user pick which Google account
-    // No include_granted_scopes: the token must not inherit broader scopes granted to this app earlier.
+    scope: (purpose === "connect" ? GMAIL_SCOPES : LOGIN_SCOPES).join(" "),
     state,
+    // No include_granted_scopes: a token must not inherit broader scopes granted to this app earlier.
   });
+  if (purpose === "connect") {
+    p.set("access_type", "offline");
+    p.set("prompt", "consent select_account"); // always return a refresh token; pick the mailbox
+  } else {
+    p.set("prompt", "select_account");
+  }
   if (loginHint) p.set("login_hint", loginHint);
   return `https://accounts.google.com/o/oauth2/v2/auth?${p}`;
 }
@@ -64,6 +72,20 @@ async function gmailFetch<T>(accessToken: string, path: string, init?: RequestIn
   return (text ? JSON.parse(text) : {}) as T;
 }
 
+/** Sign-in: who is this? (Google-verified email). No refresh token is kept. */
+export async function exchangeLoginCode(code: string) {
+  const tokens = await tokenRequest({ code, grant_type: "authorization_code", redirect_uri: redirectUri() });
+  const res = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+    headers: { Authorization: `Bearer ${tokens.access_token}` },
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Google userinfo error ${res.status}`);
+  const info = (await res.json()) as { email?: string; email_verified?: boolean };
+  if (!info.email || info.email_verified === false) throw new Error("Google didn't confirm this account's email address.");
+  return { email: info.email.toLowerCase(), scopesOk: loginScopesAreSafe(tokens.scope) };
+}
+
+/** Connecting a mailbox: exchange the code and identify the mailbox via the read-only Gmail profile. */
 export async function exchangeCode(code: string) {
   const tokens = await tokenRequest({ code, grant_type: "authorization_code", redirect_uri: redirectUri() });
   // Identify the account with the read-only Gmail profile call (no openid/email/profile scopes needed).

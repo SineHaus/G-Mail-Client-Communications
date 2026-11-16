@@ -8,16 +8,20 @@ import { fmtDate } from "@/lib/format";
 import Expandable from "./Expandable";
 import ReadToggle from "./ReadToggle";
 
-type Row = Email & { projects?: Pick<Project, "id" | "project_name" | "project_number"> | null };
+type Row = Email & { projects?: Pick<Project, "id" | "project_name" | "project_number"> | null; inbox?: string };
 
 export default function EmailHistory({
   emails,
   openDrafts,
   showClient,
+  canEdit = true,
+  currentAccountId,
 }: {
   emails: Row[];
   openDrafts: Record<string, string>;
   showClient?: Record<string, { id: string; name: string }>;
+  canEdit?: boolean;
+  currentAccountId?: string; // actions only work on emails of the selected account
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -37,6 +41,7 @@ export default function EmailHistory({
               <span className={`rounded-full px-2 py-0.5 font-medium ${m.direction === "outbound" ? "bg-emerald-50 text-emerald-700" : "bg-stone-100 text-stone-700"}`}>
                 {m.direction === "outbound" ? "You → client" : "Client → you"}
               </span>
+              {m.inbox && <span className="rounded-full bg-sky-50 px-2 py-0.5 text-sky-700">{m.inbox}</span>}
               {client && <Link href={`/clients/${client.id}`} className="font-medium hover:underline">{client.name}</Link>}
               <span className="text-stone-400">{fmtDate(m.sent_at)}</span>
               {m.projects && (
@@ -45,11 +50,11 @@ export default function EmailHistory({
                 </Link>
               )}
               <span className="ml-auto flex items-center gap-3">
-                {m.direction === "inbound" && <ReadToggle emailId={m.id} isRead={m.is_read} />}
+                {m.direction === "inbound" && (!currentAccountId || m.account_id === currentAccountId) && <ReadToggle emailId={m.id} isRead={m.is_read} />}
                 {draftId ? (
                   <Link href={`/review/${draftId}`} className="font-medium text-brand-700 hover:underline">Review draft →</Link>
                 ) : (
-                  m.direction === "inbound" && (
+                  m.direction === "inbound" && canEdit && (!currentAccountId || m.account_id === currentAccountId) && (
                     <button
                       className="font-medium text-brand-700 hover:underline disabled:opacity-50"
                       disabled={pending}

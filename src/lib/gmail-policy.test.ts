@@ -3,13 +3,21 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { assertAllowedGmailCall, GMAIL_SCOPES, grantedScopesAreSafe } from "./gmail-policy.ts";
+import { assertAllowedGmailCall, GMAIL_SCOPES, grantedScopesAreSafe, LOGIN_SCOPES, loginScopesAreSafe } from "./gmail-policy.ts";
 
 test("OAuth scopes are exactly gmail.readonly + gmail.send", () => {
   assert.deepEqual([...GMAIL_SCOPES].sort(), [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
   ]);
+});
+
+test("signing in asks for identity only, never mailbox access", () => {
+  assert.deepEqual([...LOGIN_SCOPES], ["openid", "email"]);
+  assert.equal(loginScopesAreSafe("openid https://www.googleapis.com/auth/userinfo.email"), true);
+  assert.equal(loginScopesAreSafe("openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/gmail.readonly"), false);
+  assert.equal(loginScopesAreSafe("https://www.googleapis.com/auth/userinfo.email"), false);
+  assert.equal(loginScopesAreSafe(undefined), false);
 });
 
 test("granted-scope check rejects broader or missing access", () => {
@@ -74,7 +82,8 @@ test("no source file contains label-changing Gmail code or calls Gmail outside g
     /["'`]UNREAD["'`]/,
     /\/(trash|untrash|batchDelete)\b/i,
     /gmail\.modify|mail\.google\.com\/?["'`\s]/i,
-    /\/drafts\b/,
+    /gmail\w*\s*(<[^>]*>)?\(\s*(\w+,\s*)?["'`]drafts/, // a Gmail call to the drafts endpoint
+    /users\/me\/drafts/,
   ];
   const src = new URL("../", import.meta.url).pathname;
   for (const file of sourceFiles(src)) {

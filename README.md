@@ -1,20 +1,20 @@
 # Client Communications Dashboard — The Event Rental Guys
 
 A web dashboard that connects to one or more Gmail accounts and handles all client communication in one place.
-Claude drafts a reply to every new client email in Leonel's voice. **Nothing is sent until Leonel presses Accept.**
+Claude drafts a reply to every new client email in Leonel's voice. **Nothing is sent until someone with send rights presses Approve.**
 
-- **Review Queue** (home): every new client email with Claude's draft beside it. Accept / Review / Decline.
-- **Review view**: full thread, editable draft, chat with Claude ("make it shorter"), link to a project.
-- **Clients**: auto-created from email addresses; search; profile with contact info, notes, projects and full email history.
-- **Projects**: name + number, status, event date, notes; every linked email in order. Claude suggests a project for each new email, confirmed with one click.
-- **Settings**: connected Gmail accounts (add, rename, sync, push status, reconnect, disconnect) and the style examples Claude uses for Leonel's tone.
-- **Account switcher** (top of every page): move between Gmail accounts. Each account has its own review queue, clients, projects and history, and shows its open-draft and unread counts. The last selected account is remembered.
+- **Queue** (home): every new client email with Claude's draft beside it. **Approve** (sends) / **Review** / **Decline** (handled outside the dashboard). Shows when a teammate has a draft open, and when the agent last checked mail.
+- **Draft review**: full thread, editable draft, "send back to Claude with a note". Every edit or redraft is saved as a new **version**; Approve sends exactly the version on screen.
+- **Clients**: auto-created from email addresses; profile with contact info, notes, projects and full email history.
+- **Projects**: shared across TERG with one numbering. Emails auto-link when a project number appears in them (or the client has one open project); otherwise Claude suggests one, confirmed with a click.
+- **Accounts & team** (Settings): connected Gmail accounts; team members with a role per inbox (Owner, Approver, Editor, Viewer, or no access); editable **AI reply rules**; style examples; activity log.
+- **Account switcher** (top of every page): only the inboxes you have access to, with open-draft and unread counts. The last selected one is remembered.
 
-Drafts live only in this app's database, never in Gmail Drafts. Only the Accept button sends mail (`src/lib/send.ts` is the single code path that calls Gmail's send API).
+Drafts live only in this app's database, never in Gmail Drafts. Only the Approve button sends mail (`src/lib/send.ts` is the single code path that calls Gmail's send API), and only for the Owner or an Approver on that inbox.
 
 ### Gmail safety: the dashboard never changes your inbox
 
-- **Scopes:** only `gmail.readonly` and `gmail.send`. No `gmail.modify`, no full mail access, and no `include_granted_scopes`, so older, broader grants are never inherited. If Google's token reports any other scope, sign-in is refused.
+- **Scopes:** connecting a mailbox asks for only `gmail.readonly` and `gmail.send`. No `gmail.modify`, no full mail access, and no `include_granted_scopes`, so older, broader grants are never inherited; any other scope is refused. Signing in to the dashboard asks only for `openid email` (who you are) and gives the app no access to your mailbox.
 - **Allowlist:** every Gmail request goes through `src/lib/google.ts`, which checks it against `src/lib/gmail-policy.ts` before sending. Only these calls are allowed: `getProfile`, `messages.list`, `messages.get`, `history.list` (all read-only), `watch` (push notifications) and `messages.send`. Anything else throws, including `messages.modify`, `batchModify`, `threads.modify`, trash, delete, labels and drafts.
 - **No label changes:** the app never adds or removes labels, so Gmail's UNREAD flag, archiving and the rest of your inbox stay exactly as they are.
 - **Same rules for every account:** each added account gets exactly the same two scopes and goes through the same allowlist.
@@ -40,7 +40,9 @@ src/
   components/AccountSwitcher.tsx  the dropdown
   lib/ingest.ts         Gmail → emails/clients; picks which emails get drafts
   lib/claude.ts         drafting + revision prompts (drafting rules live here)
-  lib/send.ts           Accept → send reply in the same Gmail thread
+  lib/send.ts           Approve → send reply in the same Gmail thread
+  lib/team.ts, lib/permissions.ts   team members, roles per inbox
+  lib/drafts.ts         draft versions
   lib/email-parse.ts    MIME parsing, quote stripping, reply building (unit-tested)
   proxy.ts              login guard for every page and API route
 supabase/schema.sql     database schema for a fresh install
@@ -90,7 +92,7 @@ Push needs a public HTTPS URL, so it only works on the deployed app. Locally, us
 
 1. Create a project at <https://supabase.com/dashboard>.
 2. **SQL Editor → New query**, paste the whole of `supabase/schema.sql`, **Run**.
-   *Already set up with the earlier single-account version?* Run `supabase/migrations/002_multi_account.sql` instead. It moves your current account and **all existing emails, drafts, clients, projects and style examples** onto it, then deletes the old table, which held the refresh token unencrypted. Afterwards, sign in with Google once more so the token is stored encrypted.
+   It's safe to run again. If an older, empty version of the schema is there, it's replaced; if an older version holds data, it stops without changing anything.
 3. **Project Settings → API**: copy the **Project URL** → `SUPABASE_URL` and the **service_role** secret → `SUPABASE_SERVICE_ROLE_KEY`. (Row-level security is on with no policies, so the public anon key can't read anything; only this server can.)
 
 ### 6. Anthropic
@@ -109,27 +111,47 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:3000>, **Sign in with Google**, allow Gmail access. The app imports the last 14 days of mail, creates client profiles, and drafts replies for unanswered client emails from the last 3 days. Then open **Settings → Import from my Sent mail** so Claude learns Leonel's tone.
+Open <http://localhost:3000> and **Sign in with Google** as the address in `ALLOWED_EMAILS`; you become the Owner. Then **+ Add Gmail account** for each inbox (leo@, grovert@, support@), allowing read + send. Each inbox imports its last 14 days of mail, creates client profiles, and gets drafts for unanswered client emails from the last 3 days. Then in Settings: add Grovert under **Team** with his access per inbox, fill in **AI reply rules**, and **Import from my Sent mail** so Claude learns the tone.
 
 Deploy: push this folder to a GitHub repo, import it at <https://vercel.com/new>, add every variable from `.env.example` (with `APP_URL=https://YOUR-APP.vercel.app`), deploy. Then finish step 3.3 (redirect URI) and step 4.4 (push subscription), sign in on the deployed URL, and press **Settings → Start push notifications**. `vercel.json` schedules a daily job that, for **each** connected account, renews its Gmail watch when it's within 3 days of expiring (watches last 7 days, so none lapse) and catches up on anything missed.
 
-To add more inboxes: account switcher → **+ Add Gmail account** (or Settings). Google sign-in runs again with the same two scopes; the new account is imported, gets its own push watch, and becomes the selected account. Only `ALLOWED_EMAILS` can sign in to the dashboard itself; extra mailboxes can be added only while signed in.
+To add more inboxes later: account switcher → **+ Add Gmail account** (Owner only). Google sign-in runs with the two Gmail scopes; the inbox is imported, gets its own push watch, and becomes the selected one.
 
 ## How it works
 
-### Multiple accounts and isolation
+### Team, roles and isolation
 
-- `gmail_accounts` holds each mailbox: email, display name, **encrypted** refresh token, history id, watch expiration. Every row in `clients`, `projects`, `emails`, `drafts` and `style_examples` has an `account_id`.
-- **The database enforces isolation.** Links between rows are composite foreign keys on `(account_id, id)`, so an email can only point at a client or project of the same account, and a draft only at an email or project of the same account. A cross-account link is rejected by Postgres. Client emails and project numbers are unique **per account**.
-- **The app scopes every query.** Pages and server actions resolve the selected account and filter every query with `account_id`. An id from another account just isn't found. Claude's drafting context (thread, client history, projects, style examples) comes only from the email's own account. `npm test` fails if any query on these tables lacks an `account_id` filter.
-- **Sending** uses the account that received the original email, in the same thread.
-- **Push:** each account has its own `watch`; the webhook looks up the mailbox named in the notification and syncs only that account. Disconnected accounts are ignored.
-- **Disconnect** (Settings) stops that account's push notifications, revokes the token at Google and deletes the stored token. Its emails, clients and projects stay viewable, and you can reconnect at any time.
+- **Sign-in:** each person signs in with their own Google account (identity only). They must be on the team list (`team_members`). The first sign-in by an address in `ALLOWED_EMAILS` creates an **Owner** (Leo). Owners add people in Settings → Team and give them a role on each inbox:
+
+  | Role | Can do |
+  |---|---|
+  | Owner | Everything on every inbox: connect Gmail accounts, team, roles, reply rules, Approve |
+  | Approver | On that inbox: edit drafts, Approve, Decline, Review |
+  | Editor | On that inbox: edit drafts, Decline, Review. Can't send |
+  | Viewer | On that inbox: read only |
+  | No access | The inbox is hidden entirely |
+
+  Launch setup: Leo = Owner. Grovert = Approver on grovert@ and support@, no access to leo@.
+- **Every request re-checks access.** Pages and server actions load only the inboxes the person may see and check their role (view / edit / approve / manage) before doing anything; removing someone takes effect immediately.
+- **The database enforces account isolation.** Links between account rows are composite foreign keys on `(account_id, id)`: an email can only point at a client of the same inbox, a draft only at an email of the same inbox. Cross-inbox links are rejected by Postgres.
+- **Shared projects stay private per inbox.** A person sees a project only if it touches an inbox they can access (`visible_project_ids()`), and on a project page sees only emails from those inboxes. Claude's drafting context includes only projects visible through the email's own inbox.
+- **RLS** is enabled on every table with no policies: the browser and the public API keys can read nothing. All data goes through the server.
+- **Tests** fail if any query on an inbox's tables lacks an `account_id` filter, or if a project query bypasses the visible-projects list.
+- **Audit log:** every Approve, Decline, edit, redraft, link and admin change is recorded with who did it (Settings → Activity, and per email on the review screen).
+
+### Drafts, versions and sending
+
+- Claude's first draft is **version 1**. "Save as new version" (hand edit) or "send back to Claude with a note" creates the next version, closing the previous one in a single database step.
+- **Approve** sends exactly the text on screen (unsaved edits are saved as a new version first). If someone else made a newer version in the meantime, Approve refuses and asks you to reload. The draft is locked `pending → sending` before sending, so a double click can't send twice.
+- **Decline** means you handle it yourself outside the dashboard: nothing is sent and it moves to "Handled outside". A reply sent directly from Gmail closes the draft the same way.
+- **AI reply rules** (payment methods, delivery fees, policies) live in Settings and apply to every draft. The fixed rules in `src/lib/claude.ts` always apply on top: never offer delivery or pickup dates, no invented prices, nothing sends without Approve.
+
+### Getting new mail
 
 - **New email** → Gmail publishes to Pub/Sub → `/api/gmail/webhook` → Gmail history API → messages stored in `emails`, matched to a client by address (client auto-created). Promotions/social/updates, `no-reply` senders and mailing lists are skipped.
 - **Drafting**: for the newest inbound message in each thread, Claude gets the thread, the client's earlier emails, client notes, linked project details, open projects and Leonel's style examples, and returns a reply plus an optional project suggestion. The prompt (`src/lib/claude.ts`) enforces the rules: Leonel's tone, sign-off "Leonel / The Event Rental Guys", **never offer delivery or pickup dates**, no invented prices or availability (uses `[PLACEHOLDERS]` instead).
-- **Accept** sends the reply in the same Gmail thread (`In-Reply-To`/`References` headers, to the client's `Reply-To` if set) and records it in history. The draft is claimed first, so a double-click can't send twice.
-- **Decline** discards. **Review** lets Leonel edit or chat with Claude; edits are saved as status `revised`.
+- **Approve** sends the reply in the same Gmail thread (`In-Reply-To`/`References` headers, to the client's `Reply-To` if set), from the inbox that received the email, and records it in history.
+- **Safety net for push:** while anyone has the dashboard open, an inbox not checked for 10 minutes gets a catch-up sync. A daily cron also renews each inbox's Gmail watch and catches up. The Queue shows "agent last checked X ago", and a reconnect banner if an inbox's Google sign-in stops working.
 - If Leonel replies from Gmail directly, the open draft for that thread is marked superseded automatically.
 - Marking a contact "Not a client" on their profile stops drafts for that address.
 - Linking an email to a project links its whole thread; later emails in the thread inherit the project.

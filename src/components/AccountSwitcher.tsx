@@ -23,7 +23,7 @@ function Badges({ a }: { a: Acct }) {
 }
 
 /** Dropdown at the top of every page: switch between Gmail accounts, see counts, add another. */
-export default function AccountSwitcher({ accounts, currentId }: { accounts: Acct[]; currentId: string | null }) {
+export default function AccountSwitcher({ accounts, currentId, isOwner }: { accounts: Acct[]; currentId: string | null; isOwner: boolean }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pending, start] = useTransition();
@@ -37,8 +37,10 @@ export default function AccountSwitcher({ accounts, currentId }: { accounts: Acc
   }, []);
 
   if (!accounts.length) {
-    return (
+    return isOwner ? (
       <a href="/api/auth/google?mode=add" className="btn-brand">+ Add Gmail account</a>
+    ) : (
+      <span className="text-sm text-stone-500">No Gmail accounts shared with you yet</span>
     );
   }
 
@@ -92,10 +94,14 @@ export default function AccountSwitcher({ accounts, currentId }: { accounts: Acc
             ))}
           </ul>
           <div className="border-t border-stone-100 p-1">
-            <a href="/api/auth/google?mode=add" className="block rounded-lg px-3 py-2 text-sm font-medium text-brand-700 hover:bg-brand-50">
-              + Add Gmail account
+            {isOwner && (
+              <a href="/api/auth/google?mode=add" className="block rounded-lg px-3 py-2 text-sm font-medium text-brand-700 hover:bg-brand-50">
+                + Add Gmail account
+              </a>
+            )}
+            <a href="/settings" className="block rounded-lg px-3 py-2 text-sm text-stone-600 hover:bg-stone-50">
+              {isOwner ? "Manage accounts & team" : "Account status"}
             </a>
-            <a href="/settings" className="block rounded-lg px-3 py-2 text-sm text-stone-600 hover:bg-stone-50">Manage accounts</a>
           </div>
         </div>
       )}

@@ -9,6 +9,20 @@ export const GMAIL_SCOPES = [
   "https://www.googleapis.com/auth/gmail.send",
 ] as const;
 
+/**
+ * Signing in to the dashboard only proves who you are: openid + email, no mailbox access at all.
+ * Mailbox access (GMAIL_SCOPES) is granted only when an Owner connects a Gmail account.
+ */
+export const LOGIN_SCOPES = ["openid", "email"] as const;
+const LOGIN_GRANTED_OK = new Set(["openid", "email", "https://www.googleapis.com/auth/userinfo.email"]);
+
+/** True if a sign-in token carries identity only (and no Gmail or other access). */
+export function loginScopesAreSafe(scope: string | undefined): boolean {
+  if (!scope) return false;
+  const granted = scope.split(/\s+/).filter(Boolean);
+  return granted.includes("openid") && granted.every((s) => LOGIN_GRANTED_OK.has(s));
+}
+
 /** Every Gmail API call the app may make, as [HTTP method, path pattern under users/me/]. */
 const ALLOWED: readonly [string, RegExp, string][] = [
   ["GET", /^profile$/, "users.getProfile (read-only)"],

@@ -11,6 +11,7 @@ export interface Client {
 export interface Project {
   id: string;
   project_name: string;
+  created_by?: string | null;
   project_number: string;
   client_id: string | null;
   status: "inquiry" | "booked" | "completed" | "cancelled";
@@ -20,6 +21,7 @@ export interface Project {
 }
 export interface Email {
   id: string;
+  account_id: string;
   gmail_message_id: string;
   gmail_thread_id: string;
   client_id: string | null;
@@ -36,11 +38,17 @@ export interface Email {
 }
 export interface Draft {
   id: string;
+  account_id: string;
   email_id: string;
+  version: number;
   body: string;
-  status: "pending" | "accepted" | "declined" | "revised" | "superseded";
+  status: "pending" | "sending" | "sent" | "declined" | "superseded";
+  created_by: string;
+  review_note: string | null;
   suggested_project_id: string | null;
   suggestion_reason: string | null;
+  decided_by: string | null;
+  decided_at: string | null;
   error: string | null;
   created_at: string;
   updated_at: string;

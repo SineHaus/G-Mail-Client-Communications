@@ -35,7 +35,7 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-const ACCOUNT_TABLES = ["emails", "drafts", "clients", "projects", "style_examples"];
+const ACCOUNT_TABLES = ["emails", "drafts", "clients", "style_examples", "presence"];
 
 test("every query on an account-owned table is scoped by account_id", () => {
   const src = new URL("../", import.meta.url).pathname;
@@ -59,6 +59,25 @@ test("every query on an account-owned table is scoped by account_id", () => {
     }
   }
   assert.deepEqual(misses, [], `Unscoped queries:\n${misses.join("\n")}`);
+});
+
+test("shared projects are only read through the visible-projects list (or an explained exemption)", () => {
+  const src = new URL("../", import.meta.url).pathname;
+  const misses: string[] = [];
+  for (const file of sourceFiles(src)) {
+    const text = readFileSync(file, "utf8");
+    const re = /\.from\("projects"\)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text))) {
+      const rest = text.slice(m.index + 1);
+      const end = Math.min(...[rest.indexOf(".from("), rest.search(/;\s*$/m), 1200].filter((i) => i >= 0));
+      const chain = rest.slice(0, end);
+      const exempt = /isolation-exempt:/.test(text.slice(Math.max(0, m.index - 300), m.index));
+      const scoped = /\.in\("id",\s*(ids|visible|visibleIds)\b/.test(chain) || /\.eq\("id",\s*\w+\)/.test(chain) && /assertProjectVisible|visible/.test(text.slice(Math.max(0, m.index - 400), m.index));
+      if (!scoped && !exempt) misses.push(`${file.replace(src, "src/")}:${text.slice(0, m.index).split("\n").length}`);
+    }
+  }
+  assert.deepEqual(misses, [], `Project queries not limited to visible projects:\n${misses.join("\n")}`);
 });
 
 test("pages never select the encrypted token column", () => {

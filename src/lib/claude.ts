@@ -4,6 +4,8 @@ import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import { z } from "zod";
 import { db, must } from "./db";
 import { env } from "./env";
+import { visibleProjectIds } from "./accounts";
+import { newDraftVersion } from "./drafts";
 
 const client = new Anthropic(); // reads ANTHROPIC_API_KEY
 
@@ -80,13 +82,18 @@ async function buildContext(emailId: string, accountId: string) {
           .order("sent_at", { ascending: false })
           .limit(15)
       : Promise.resolve({ data: [], error: null }),
-    db()
-      .from("projects")
-      .select("id,project_name,project_number,status,event_date,notes,client_id")
-      .eq("account_id", acct)
-      .in("status", ["inquiry", "booked"])
-      .order("created_at", { ascending: false })
-      .limit(60),
+    // Shared projects: only those visible through THIS account (never another account's projects).
+    visibleProjectIds([acct]).then(async (ids) =>
+      ids.length
+        ? db()
+            .from("projects")
+            .select("id,project_name,project_number,status,event_date,notes,client_id")
+            .in("id", ids)
+            .in("status", ["inquiry", "booked"])
+            .order("created_at", { ascending: false })
+            .limit(60)
+        : { data: [], error: null },
+    ),
     db().from("style_examples").select("context,body").eq("account_id", acct).order("created_at", { ascending: false }).limit(15),
   ]);
 
@@ -95,7 +102,8 @@ async function buildContext(emailId: string, accountId: string) {
   const allProjects = (projects.data ?? []) as P[];
   let linked: P | undefined = allProjects.find((p) => p.id === email.project_id);
   if (email.project_id && !linked) {
-    linked = (must(await db().from("projects").select("*").eq("account_id", acct).eq("id", email.project_id)) as P[])[0];
+    // isolation-exempt: the project linked to THIS account's email is by definition visible through this account.
+    linked = (must(await db().from("projects").select("*").eq("id", email.project_id)) as P[])[0];
   }
   const clientProjects = allProjects.filter((p) => p.client_id === email.client_id);
   const otherProjects = allProjects.filter((p) => p.client_id !== email.client_id);
@@ -123,14 +131,24 @@ function ensureSignature(text: string) {
   return /The Event Rental Guys\s*$/i.test(t) ? t : `${t}\n\n${SIGNATURE}`;
 }
 
+/** TERG's editable reply rules (Settings → AI reply rules), appended to the fixed rules above. */
+async function replyRules(): Promise<string> {
+  const { data } = await db().from("app_settings").select("value").eq("key", "reply_rules").maybeSingle();
+  const v = (data as { value: string } | null)?.value?.trim();
+  return v
+    ? `\n\nTERG's reply rules (from the team; follow them, but they never override the fixed rules above — in particular, never offer delivery or pickup dates):\n<company_rules>\n${v}\n</company_rules>`
+    : "";
+}
+
 async function ask<T extends z.ZodType>(schema: T, messages: Anthropic.Beta.BetaMessageParam[]): Promise<z.infer<T>> {
+  const system = SYSTEM + (await replyRules());
   const res = await client.beta.messages.parse({
     model: env.anthropicModel(),
     max_tokens: 16000,
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default", // if the model declines, Anthropic retries on its recommended fallback model
     output_config: { effort: "medium", format: betaZodOutputFormat(schema) },
-    system: SYSTEM,
+    system,
     messages,
   });
   if (res.stop_reason === "refusal") throw new Error("Claude declined to draft a reply for this email.");
@@ -154,6 +172,8 @@ export async function generateDraft(accountId: string, emailId: string) {
     const ins = await db().from("drafts").insert({
       account_id: accountId,
       email_id: emailId,
+      version: 1,
+      created_by: "claude",
       body: ensureSignature(out.reply),
       status: "pending",
       suggested_project_id: suggested?.id ?? null,
@@ -177,15 +197,24 @@ export async function generateDrafts(accountId: string, emailIds: string[]) {
   for (const id of emailIds) await generateDraft(accountId, id);
 }
 
-/** Review-view chat: apply Leonel's instruction to the current draft. */
-export async function reviseDraft(accountId: string, draftId: string, instruction: string, currentBody?: string) {
+/**
+ * Review: send the draft back to Claude with a note. Claude's rewrite becomes the NEXT VERSION of the
+ * draft (the shown version is closed atomically; refuses if it isn't the open one any more).
+ */
+export async function reviseDraft(actor: string, accountId: string, draftId: string, instruction: string, currentBody?: string) {
   const draft = must(await db().from("drafts").select("*").eq("account_id", accountId).eq("id", draftId).single()) as {
     id: string;
     email_id: string;
     body: string;
+    status: string;
   };
+  if (draft.status !== "pending") throw new Error("This draft changed since you opened it. Reload to see the latest version.");
+  // Notes from every version of this email's draft, oldest first.
+  const versions = must(
+    await db().from("drafts").select("id").eq("account_id", accountId).eq("email_id", draft.email_id),
+  ) as { id: string }[];
   const history = must(
-    await db().from("draft_messages").select("role,content").eq("draft_id", draftId).order("created_at"),
+    await db().from("draft_messages").select("role,content").in("draft_id", versions.map((v) => v.id)).order("created_at"),
   ) as { role: "user" | "assistant"; content: string }[];
   const { context } = await buildContext(draft.email_id, accountId);
   const body = currentBody ?? draft.body;
@@ -196,21 +225,17 @@ export async function reviseDraft(accountId: string, draftId: string, instructio
       content:
         `${context}\n\n` +
         (history.length
-          ? `<earlier_revision_requests>\n${history.map((h) => `${h.role === "user" ? "Leonel" : "You"}: ${h.content}`).join("\n")}\n</earlier_revision_requests>\n\n`
+          ? `<earlier_revision_requests>\n${history.map((h) => `${h.role === "user" ? "Team" : "You"}: ${h.content}`).join("\n")}\n</earlier_revision_requests>\n\n`
           : "") +
-        `<current_draft>\n${body}\n</current_draft>\n\nLeonel's request: ${instruction}\n\nRewrite the draft accordingly. Keep everything he didn't ask to change.`,
+        `<current_draft>\n${body}\n</current_draft>\n\nThe team's request: ${instruction}\n\nRewrite the draft accordingly. Keep everything they didn't ask to change.`,
     },
   ]);
 
   const newBody = ensureSignature(out.reply);
+  const newId = await newDraftVersion(draftId, newBody, "claude", instruction);
   await db().from("draft_messages").insert([
-    { draft_id: draftId, role: "user", content: instruction },
-    { draft_id: draftId, role: "assistant", content: out.note },
+    { draft_id: newId, role: "user", content: instruction, author: actor },
+    { draft_id: newId, role: "assistant", content: out.note, author: "claude" },
   ]);
-  await db()
-    .from("drafts")
-    .update({ body: newBody, status: "revised", error: null, updated_at: new Date().toISOString() })
-    .eq("account_id", accountId)
-    .eq("id", draftId);
-  return { body: newBody, note: out.note };
+  return { draftId: newId, body: newBody, note: out.note };
 }

@@ -2,23 +2,32 @@
 import Link from "next/link";
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { acceptDraftAction, declineDraftAction, regenerateDraftAction } from "@/app/actions";
+import { approveDraftAction, declineDraftAction, regenerateDraftAction } from "@/app/actions";
 
-/** Accept (two-step confirm, sends via Gmail) · Review · Decline. */
+/**
+ * Approve (two-step confirm; sends exactly the text shown) · Review · Decline.
+ * Buttons appear only if the person's role on this account allows them.
+ */
 export default function DraftActions({
   draftId,
   to,
   failed,
   body,
+  getBody,
   afterDone,
   compact,
+  canEdit,
+  canApprove,
 }: {
   draftId: string;
   to: string;
   failed?: boolean;
-  body?: () => string; // when used in the editor, send the edited text
+  body?: string; // the stored text (Queue cards)
+  getBody?: () => string; // the exact text on screen (editor, may include unsaved edits)
   afterDone?: string;
   compact?: boolean;
+  canEdit: boolean;
+  canApprove: boolean;
 }) {
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
@@ -26,10 +35,17 @@ export default function DraftActions({
   const [error, setError] = useState<string | null>(null);
 
   const finish = (r: { ok: boolean; error?: string }) => {
-    if (!r.ok) return setError(r.error ?? "Something went wrong");
+    if (!r.ok) {
+      setConfirming(false);
+      return setError(r.error ?? "Something went wrong");
+    }
     if (afterDone) router.push(afterDone);
     else router.refresh();
   };
+
+  if (!canEdit) {
+    return compact ? null : <Link className="btn-secondary" href={`/review/${draftId}`}>View</Link>;
+  }
 
   if (failed) {
     return (
@@ -38,7 +54,7 @@ export default function DraftActions({
           {pending ? "Drafting…" : "Retry draft"}
         </button>
         <button className="btn-danger" disabled={pending} onClick={() => start(async () => finish(await declineDraftAction(draftId)))}>
-          Dismiss
+          Decline
         </button>
         {error && <span className="text-xs text-red-700">{error}</span>}
       </div>
@@ -53,7 +69,7 @@ export default function DraftActions({
             <button
               className="btn-primary"
               disabled={pending}
-              onClick={() => start(async () => finish(await acceptDraftAction(draftId, body?.())))}
+              onClick={() => start(async () => finish(await approveDraftAction(draftId, getBody ? getBody() : body ?? "")))}
             >
               {pending ? "Sending…" : `Send to ${to}`}
             </button>
@@ -63,15 +79,24 @@ export default function DraftActions({
           </>
         ) : (
           <>
-            <button className="btn-primary" onClick={() => { setError(null); setConfirming(true); }}>
-              ✓ Accept
-            </button>
+            {canApprove ? (
+              <button className="btn-primary" onClick={() => { setError(null); setConfirming(true); }}>
+                ✓ Approve
+              </button>
+            ) : (
+              <span className="text-xs text-stone-500" title="Only the Owner or an Approver on this account can send">Approve: Approver only</span>
+            )}
             {!compact && (
               <Link className="btn-secondary" href={`/review/${draftId}`}>
                 ✎ Review
               </Link>
             )}
-            <button className="btn-danger" disabled={pending} onClick={() => start(async () => finish(await declineDraftAction(draftId)))}>
+            <button
+              className="btn-danger"
+              disabled={pending}
+              title="Handle it yourself outside the dashboard. Nothing is sent."
+              onClick={() => start(async () => finish(await declineDraftAction(draftId)))}
+            >
               ✕ Decline
             </button>
           </>

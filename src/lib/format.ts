@@ -26,3 +26,8 @@ export const STATUS_STYLES: Record<string, string> = {
   completed: "bg-stone-100 text-stone-600 ring-stone-200",
   cancelled: "bg-red-50 text-red-700 ring-red-200",
 };
+
+/** Teammates count as "has it open" if their review screen pinged within this window. */
+export function presenceCutoff(seconds = 90) {
+  return new Date(Date.now() - seconds * 1000).toISOString();
+}

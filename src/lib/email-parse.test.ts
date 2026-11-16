@@ -75,3 +75,16 @@ test("buildReplyRaw produces a threaded UTF-8 reply", () => {
   assert.equal(Buffer.from(subj, "base64").toString("utf8"), "Re: Fiesta – mesas");
   assert.equal(Buffer.from(b64.replace(/\r\n/g, ""), "base64").toString("utf8"), "Hola María,\r\nSí tenemos.\r\n\r\nLeonel\r\nThe Event Rental Guys");
 });
+
+test("mentionsProjectNumber finds project references but not prices or quantities", async () => {
+  const { mentionsProjectNumber: m } = await import("./email-parse.ts");
+  assert.equal(m("Re: tents", "Hi, about #1042 — can we add lights?", "1042"), true);
+  assert.equal(m("Re: tents", "This is for project 1042.", "1042"), true);
+  assert.equal(m("Re: tents", "Job no. 1042 please", "1042"), true);
+  assert.equal(m("Quote 1042 - Smith wedding", "", "1042"), true);
+  assert.equal(m("Smith wedding 1042", "", "1042"), true);
+  assert.equal(m("Re: tents", "The total was $1042 and we need 1042 chairs", "1042"), false);
+  assert.equal(m("Order 21042", "ref 10423", "1042"), false);
+  assert.equal(m("Re: tents", "nothing here", "1042"), false);
+  assert.equal(m("12", "#12", "12"), false); // numbers shorter than 3 digits are ignored
+});
