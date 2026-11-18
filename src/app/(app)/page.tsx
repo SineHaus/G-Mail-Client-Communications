@@ -16,6 +16,8 @@ import NoAccount from "@/components/NoAccount";
 import AccountHealth from "@/components/AccountHealth";
 
 export const dynamic = "force-dynamic";
+// Server actions on this page (Sync now, Redraft, Review, Retry) call Claude; give them the full 5 minutes.
+export const maxDuration = 300;
 
 type Row = Draft & {
   emails: Email & { clients: Client | null; projects: Pick<Project, "id" | "project_name" | "project_number"> | null };

@@ -9,6 +9,8 @@ import { requireMember } from "@/lib/team";
 import NoAccount from "@/components/NoAccount";
 
 export const dynamic = "force-dynamic";
+// Server actions on this page (Sync now, Redraft, Review, Retry) call Claude; give them the full 5 minutes.
+export const maxDuration = 300;
 
 export default async function ClientsPage({ searchParams }: PageProps<"/clients">) {
   const sp = await searchParams;

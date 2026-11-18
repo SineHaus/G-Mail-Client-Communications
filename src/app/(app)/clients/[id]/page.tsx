@@ -10,6 +10,8 @@ import { getCurrentAccount, visibleProjectIds } from "@/lib/accounts";
 import { can } from "@/lib/permissions";
 
 export const dynamic = "force-dynamic";
+// Server actions on this page (Sync now, Redraft, Review, Retry) call Claude; give them the full 5 minutes.
+export const maxDuration = 300;
 
 export default async function ClientPage({ params }: PageProps<"/clients/[id]">) {
   const { id } = await params;

@@ -11,6 +11,8 @@ import AddProjectButton from "@/components/AddProjectButton";
 import NoAccount from "@/components/NoAccount";
 
 export const dynamic = "force-dynamic";
+// Server actions on this page (Sync now, Redraft, Review, Retry) call Claude; give them the full 5 minutes.
+export const maxDuration = 300;
 const STATUSES = ["all", "inquiry", "booked", "completed", "cancelled"];
 
 export default async function ProjectsPage({ searchParams }: PageProps<"/projects">) {

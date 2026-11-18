@@ -40,6 +40,7 @@ src/
   components/AccountSwitcher.tsx  the dropdown
   lib/ingest.ts         Gmail → emails/clients; picks which emails get drafts
   lib/claude.ts         drafting + revision prompts (drafting rules live here)
+  lib/draft-queue.ts    finds client emails still without a draft and drafts them within the time left
   lib/send.ts           Approve → send reply in the same Gmail thread
   lib/team.ts, lib/permissions.ts   team members, roles per inbox
   lib/drafts.ts         draft versions
@@ -142,6 +143,7 @@ To add more inboxes later: account switcher → **+ Add Gmail account** (Owner o
 
 ### Drafts, versions and sending
 
+- **Drafting picks up where it left off.** Every check (push, the open dashboard's poll, the daily job, Sync now) drafts any unanswered client email from the draft lookback window that has no draft yet, three at a time, as many as fit before the function's time limit. The rest are drafted on the next check, so an email is never left without a draft because a run ran out of time. A lease in `app_settings` keeps two runs from drafting the same inbox at once. A Claude call that takes over 150 s, or a refused API key or unknown model, shows as a red card with Retry and the reason.
 - Claude's first draft is **version 1**. "Save as new version" (hand edit) or "send back to Claude with a note" creates the next version, closing the previous one in a single database step.
 - **Approve** sends exactly the text on screen (unsaved edits are saved as a new version first). If someone else made a newer version in the meantime, Approve refuses and asks you to reload. The draft is locked `pending → sending` before sending, so a double click can't send twice.
 - **Decline** means you handle it yourself outside the dashboard: nothing is sent and it moves to "Handled outside". A reply sent directly from Gmail closes the draft the same way.

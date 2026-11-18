@@ -4,7 +4,7 @@ import { exchangeCode, exchangeLoginCode, getAccount, saveAccountToken } from "@
 import { findMember, memberForSignIn } from "@/lib/team";
 import { audit } from "@/lib/audit";
 import { syncRecent } from "@/lib/ingest";
-import { generateDrafts } from "@/lib/claude";
+import { draftDeadline, draftMissing } from "@/lib/draft-queue";
 import { startWatch } from "@/lib/watch";
 import { ACCOUNT_COOKIE, accountCookieOptions } from "@/lib/accounts";
 import { createSessionValue, SESSION_COOKIE, sessionCookieOptions, verifySessionValue } from "@/lib/session";
@@ -87,11 +87,12 @@ async function finishSignIn(
 
   if (saved.isNew || !acct.history_id) {
     // New or reconnected account: import recent mail, start its own push watch, draft replies — in the background.
+    const startedAt = Date.now(); // within a few seconds of the request's start; draftDeadline leaves 20 s spare
     after(async () => {
       try {
         const { draftEmailIds } = await syncRecent(accountId);
         await startWatch(accountId).catch((e) => console.error("watch failed", email, e));
-        await generateDrafts(accountId, draftEmailIds);
+        await draftMissing(accountId, draftDeadline(startedAt, maxDuration), draftEmailIds);
       } catch (e) {
         console.error("Initial sync failed", email, e);
       }

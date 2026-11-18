@@ -9,6 +9,8 @@ import TeamManager from "@/components/TeamManager";
 import ReplyRules from "@/components/ReplyRules";
 
 export const dynamic = "force-dynamic";
+// Server actions on this page (Sync now, Redraft, Review, Retry) call Claude; give them the full 5 minutes.
+export const maxDuration = 300;
 
 export default async function SettingsPage({ searchParams }: PageProps<"/settings">) {
   const { error } = await searchParams;

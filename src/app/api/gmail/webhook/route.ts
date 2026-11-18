@@ -2,7 +2,7 @@ import { after, NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { syncHistory } from "@/lib/ingest";
-import { generateDrafts } from "@/lib/claude";
+import { draftDeadline, draftMissing } from "@/lib/draft-queue";
 
 export const maxDuration = 300;
 
@@ -12,6 +12,7 @@ export const maxDuration = 300;
  * ({"emailAddress": ..., "historyId": ...}); we route it to that account only.
  */
 export async function POST(req: NextRequest) {
+  const startedAt = Date.now();
   if (req.nextUrl.searchParams.get("token") !== env.webhookToken()) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
@@ -37,7 +38,7 @@ export async function POST(req: NextRequest) {
   after(async () => {
     try {
       const { draftEmailIds } = await syncHistory(accountId);
-      await generateDrafts(accountId, draftEmailIds);
+      await draftMissing(accountId, draftDeadline(startedAt, maxDuration), draftEmailIds);
     } catch (e) {
       console.error("webhook sync failed", emailAddress, e);
     }
