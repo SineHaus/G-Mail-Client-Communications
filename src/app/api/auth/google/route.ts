@@ -6,7 +6,7 @@ import { SESSION_COOKIE, verifySessionValue } from "@/lib/session";
 /**
  * Starts Google sign-in.
  *   /api/auth/google            → sign in to the dashboard (identity only: openid + email)
- *   /api/auth/google?mode=add   → Owner connects / reconnects a Gmail account (gmail.readonly + gmail.send)
+ *   /api/auth/google?mode=add   → Owner connects / reconnects a Gmail account (read, send, and read/unread changes)
  */
 export async function GET(req: NextRequest) {
   // Fail with a readable message instead of a blank 500 when setup is incomplete.

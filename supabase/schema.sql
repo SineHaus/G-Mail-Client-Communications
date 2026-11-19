@@ -112,7 +112,7 @@ create table if not exists emails (
   body               text,             -- plain text, quoted history stripped
   snippet            text,
   sent_at            timestamptz not null,
-  is_read            boolean not null default false, -- read/unread lives ONLY here, never in Gmail
+  is_read            boolean not null default false, -- the dashboard's copy; changes are copied to Gmail's UNREAD label (lib/read-sync.ts)
   created_at         timestamptz not null default now(),
   constraint emails_account_message_key unique (account_id, gmail_message_id),
   constraint emails_account_id_id_key unique (account_id, id),

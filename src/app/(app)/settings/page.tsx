@@ -46,7 +46,7 @@ export default async function SettingsPage({ searchParams }: PageProps<"/setting
           <div>
             <h2 className="font-semibold">Gmail accounts</h2>
             <p className="text-sm text-stone-500">
-              Each account has its own queue and clients. Access to Gmail is read + send only; nothing is ever marked read or labelled there.
+              Each account has its own queue and clients. The dashboard reads mail, sends approved replies, and copies read/unread to Gmail. It never archives, deletes or changes other labels.
             </p>
           </div>
           {isOwner && <a href="/api/auth/google?mode=add" className="btn-brand">+ Add Gmail account</a>}

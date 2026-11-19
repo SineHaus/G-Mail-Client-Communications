@@ -19,6 +19,7 @@ import { startWatch } from "@/lib/watch";
 import { disconnectAccount, gmailFor, getAccount } from "@/lib/google";
 import { extractBody, header, stripQuoted } from "@/lib/email-parse";
 import { audit } from "@/lib/audit";
+import { markEmailRead, markEmailUnread } from "@/lib/read-sync";
 import { CHECKLIST_KEY, getChecklist, missingFor, quoteForThread, type QuoteRequest, type Stage } from "@/lib/quotes";
 import { ITEMS_KEY, applyItemChange, cleanGoodshuffleUrl, itemsSummary, mergeInfo, textToItems } from "@/lib/quote-rules";
 import { runCommand, type ProposedChange } from "@/lib/agent-commands";
@@ -116,7 +117,7 @@ export async function declineDraftAction(draftId: string) {
         .select("email_id"),
     ) as { email_id: string }[];
     if (!rows[0]) throw new Error("This draft changed since you opened it. Reload to see the latest.");
-    await db().from("emails").update({ is_read: true }).eq("account_id", c.accountId).eq("id", rows[0].email_id);
+    await markEmailRead(c.accountId, rows[0].email_id);
     await audit(c.member.email, "declined", { accountId: c.accountId, draftId, emailId: rows[0].email_id, detail: "handled outside the dashboard" });
   });
   refreshAll();
@@ -193,12 +194,12 @@ export async function pingPresenceAction(emailId: string) {
   });
 }
 
-// ---------- Read / unread (Supabase only — Gmail labels are never changed) ----------
+// ---------- Read / unread (dashboard first, then copied to Gmail's UNREAD label; see lib/read-sync.ts) ----------
 
 export async function setEmailReadAction(emailId: string, isRead: boolean) {
   const r = await run("view", async (c) => {
-    const rows = must(await db().from("emails").update({ is_read: isRead }).eq("account_id", c.accountId).eq("id", emailId).select("id")) as unknown[];
-    if (!rows.length) throw new Error("Email not found in this account.");
+    if (isRead) await markEmailRead(c.accountId, emailId);
+    else await markEmailUnread(c.accountId, emailId);
   });
   refreshAll();
   return r;

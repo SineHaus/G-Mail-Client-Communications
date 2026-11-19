@@ -1,12 +1,25 @@
-// Guarantees the dashboard can never change the Gmail mailbox. Run with: npm test
+// Guarantees the dashboard can't change the Gmail mailbox beyond sending approved replies and the
+// read/unread (UNREAD) label. Run with: npm test
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { assertAllowedGmailCall, GMAIL_SCOPES, grantedScopesAreSafe, LOGIN_SCOPES, loginScopesAreSafe } from "./gmail-policy.ts";
+import {
+  assertAllowedGmailBody,
+  assertAllowedGmailCall,
+  GMAIL_SCOPES,
+  grantedCanModify,
+  grantedScopesAreSafe,
+  isGmailScopeError,
+  LOGIN_SCOPES,
+  loginScopesAreSafe,
+  markReadRequest,
+  markUnreadRequest,
+} from "./gmail-policy.ts";
 
-test("OAuth scopes are exactly gmail.readonly + gmail.send", () => {
+test("OAuth scopes are exactly gmail.readonly + gmail.send + gmail.modify", () => {
   assert.deepEqual([...GMAIL_SCOPES].sort(), [
+    "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.send",
   ]);
@@ -20,16 +33,22 @@ test("signing in asks for identity only, never mailbox access", () => {
   assert.equal(loginScopesAreSafe(undefined), false);
 });
 
-test("granted-scope check rejects broader or missing access", () => {
-  const ok = GMAIL_SCOPES.join(" ");
-  assert.equal(grantedScopesAreSafe(ok), true);
-  assert.equal(grantedScopesAreSafe(`${ok} https://www.googleapis.com/auth/gmail.modify`), false);
-  assert.equal(grantedScopesAreSafe(`${ok} https://mail.google.com/`), false);
+test("granted-scope check: read + send required, modify optional, nothing broader", () => {
+  const readSend = "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send";
+  const all = GMAIL_SCOPES.join(" ");
+  assert.equal(grantedScopesAreSafe(all), true);
+  assert.equal(grantedCanModify(all), true);
+  assert.equal(grantedScopesAreSafe(readSend), true); // older connection, or modify unticked
+  assert.equal(grantedCanModify(readSend), false);
+  assert.equal(grantedScopesAreSafe(`${all} https://mail.google.com/`), false);
+  assert.equal(grantedScopesAreSafe(`${all} https://www.googleapis.com/auth/gmail.settings.basic`), false);
   assert.equal(grantedScopesAreSafe("https://www.googleapis.com/auth/gmail.readonly"), false);
+  assert.equal(grantedScopesAreSafe("https://www.googleapis.com/auth/gmail.modify"), false);
   assert.equal(grantedScopesAreSafe(undefined), false);
+  assert.equal(grantedCanModify(undefined), false);
 });
 
-test("allowed calls: read-only fetch/sync/push + messages.send", () => {
+test("allowed calls: read-only fetch/sync/push + messages.send + read/unread", () => {
   for (const [m, p] of [
     ["GET", "profile"],
     ["GET", "messages?q=newer_than%3A14d&maxResults=100"],
@@ -39,13 +58,13 @@ test("allowed calls: read-only fetch/sync/push + messages.send", () => {
     ["POST", "watch"],
     ["POST", "stop"],
     ["POST", "messages/send"],
+    ["POST", "messages/batchModify"],
+    ["POST", "messages/18c2f0a1b2c3d4e5/modify"],
   ]) assert.doesNotThrow(() => assertAllowedGmailCall(m, p), `${m} ${p}`);
 });
 
-test("blocked: every label-changing or destructive Gmail call", () => {
+test("blocked: every destructive Gmail call, thread-wide changes and label admin", () => {
   for (const [m, p] of [
-    ["POST", "messages/abc/modify"],
-    ["POST", "messages/batchModify"],
     ["POST", "messages/batchDelete"],
     ["POST", "threads/abc/modify"],
     ["POST", "messages/abc/trash"],
@@ -60,9 +79,49 @@ test("blocked: every label-changing or destructive Gmail call", () => {
     ["POST", "labels"],
     ["PATCH", "labels/Label_1"],
     ["GET", "messages/abc/modify"],
+    ["POST", "messages/abc/def/modify"],
+    ["POST", "messages/../threads/abc/modify"],
     ["GET", "messages/abc?format=full/../modify"],
     ["POST", "settings/filters"],
   ]) assert.throws(() => assertAllowedGmailCall(m, p), /Blocked Gmail API call/, `${m} ${p}`);
+});
+
+test("read/unread requests may only touch the UNREAD label", () => {
+  const ok = [markReadRequest(["18c2f0a1b2c3d4e5", "18c2f0a1b2c3d4e6"]), markUnreadRequest("18c2f0a1b2c3d4e5")];
+  for (const r of ok) {
+    assert.doesNotThrow(() => assertAllowedGmailCall("POST", r.path));
+    assert.doesNotThrow(() => assertAllowedGmailBody("POST", r.path, JSON.stringify(r.body)));
+  }
+  const bad: [string, unknown][] = [
+    ["messages/batchModify", { ids: ["abc"], removeLabelIds: ["INBOX"] }], // archive
+    ["messages/batchModify", { ids: ["abc"], removeLabelIds: ["UNREAD", "INBOX"] }],
+    ["messages/batchModify", { ids: ["abc"], addLabelIds: ["UNREAD"] }],
+    ["messages/batchModify", { ids: ["abc"], removeLabelIds: ["UNREAD"], addLabelIds: ["TRASH"] }],
+    ["messages/batchModify", { ids: [], removeLabelIds: ["UNREAD"] }],
+    ["messages/batchModify", { ids: ["a/b"], removeLabelIds: ["UNREAD"] }],
+    ["messages/batchModify", { ids: Array(1001).fill("abc"), removeLabelIds: ["UNREAD"] }],
+    ["messages/batchModify", { removeLabelIds: ["UNREAD"] }],
+    ["messages/batchModify", null],
+    ["messages/batchModify", "not json"],
+    ["messages/abc/modify", { addLabelIds: ["STARRED"] }],
+    ["messages/abc/modify", { addLabelIds: ["TRASH"] }],
+    ["messages/abc/modify", { removeLabelIds: ["UNREAD"] }],
+    ["messages/abc/modify", { addLabelIds: ["UNREAD"], removeLabelIds: ["INBOX"] }],
+    ["messages/abc/modify", {}],
+  ];
+  for (const [p, body] of bad) {
+    assert.throws(
+      () => assertAllowedGmailBody("POST", p, typeof body === "string" ? body : JSON.stringify(body)),
+      /Blocked Gmail API call/,
+      `${p} ${JSON.stringify(body)}`,
+    );
+  }
+});
+
+test("a missing scope is recognised, and a rate limit is not mistaken for one", () => {
+  assert.equal(isGmailScopeError(403, '{"error":{"code":403,"message":"Request had insufficient authentication scopes.","errors":[{"reason":"insufficientPermissions"}],"status":"PERMISSION_DENIED","details":[{"reason":"ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}}'), true);
+  assert.equal(isGmailScopeError(403, '{"error":{"errors":[{"reason":"rateLimitExceeded"}]}}'), false);
+  assert.equal(isGmailScopeError(401, "insufficientPermissions"), false);
 });
 
 function sourceFiles(dir: string): string[] {
@@ -73,6 +132,7 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
+// Label requests are built only in gmail-policy.ts (UNREAD only, body-checked), so nothing else may spell one out.
 test("no source file contains label-changing Gmail code or calls Gmail outside google.ts", () => {
   const forbidden = [
     /batchModify/i,

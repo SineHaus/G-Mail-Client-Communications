@@ -6,6 +6,7 @@ import { audit } from "@/lib/audit";
 import { syncRecent } from "@/lib/ingest";
 import { draftDeadline, draftMissing } from "@/lib/draft-queue";
 import { startWatch } from "@/lib/watch";
+import { catchUpReadInGmail, setReadSyncNeedsReconnect } from "@/lib/read-sync";
 import { ACCOUNT_COOKIE, accountCookieOptions } from "@/lib/accounts";
 import { createSessionValue, SESSION_COOKIE, sessionCookieOptions, verifySessionValue } from "@/lib/session";
 
@@ -71,10 +72,10 @@ async function finishSignIn(
   const owner = session ? await findMember(session.email) : null;
   if (!owner?.is_owner) return fail("Only the Owner can connect Gmail accounts.");
 
-  const { tokens, email, scopesOk } = await exchangeCode(code);
+  const { tokens, email, scopesOk, canModify } = await exchangeCode(code);
   if (!scopesOk) {
     return fail(
-      "Google granted different permissions than read + send. Remove the app at myaccount.google.com/permissions and try again, allowing both.",
+      "Google granted different permissions than read, send and manage labels. Remove the app at myaccount.google.com/permissions and try again, allowing all of them.",
     );
   }
   if (!tokens.refresh_token) {
@@ -82,6 +83,13 @@ async function finishSignIn(
   }
   const saved = await saveAccountToken(email, tokens.refresh_token); // stored encrypted, server side only
   const accountId = saved.id;
+  // Without the label permission (unticked, or not yet added in Google Cloud) read status stays in the dashboard
+  // only, and the dashboard says so with a Reconnect link.
+  await setReadSyncNeedsReconnect(accountId, !canModify).catch((e) => console.error("read-sync flag", e));
+  if (canModify) {
+    // Reconnected with the new permission: emails already read here get marked read in Gmail too.
+    after(() => catchUpReadInGmail(accountId).catch((e) => console.error("read catch-up failed", email, e)));
+  }
   const acct = await getAccount(accountId);
   await audit(owner.email, saved.isNew ? "account_connected" : "account_reconnected", { accountId, detail: email });
 

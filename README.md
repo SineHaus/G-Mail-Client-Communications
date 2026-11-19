@@ -17,15 +17,15 @@ The left panel has three tabs, with Settings at the bottom:
 
 Drafts live only in this app's database, never in Gmail Drafts. Only the Approve button sends mail (`src/lib/send.ts` is the single code path that calls Gmail's send API), and only for the Owner or an Approver on that inbox.
 
-### Gmail safety: the dashboard never changes your inbox
+### Gmail safety: the dashboard reads, sends approved replies, and copies read/unread
 
-- **Scopes:** connecting a mailbox asks for only `gmail.readonly` and `gmail.send`. No `gmail.modify`, no full mail access, and no `include_granted_scopes`, so older, broader grants are never inherited; any other scope is refused. Signing in to the dashboard asks only for `openid email` (who you are) and gives the app no access to your mailbox.
-- **Allowlist:** every Gmail request goes through `src/lib/google.ts`, which checks it against `src/lib/gmail-policy.ts` before sending. Only these calls are allowed: `getProfile`, `messages.list`, `messages.get`, `history.list` (all read-only), `watch` (push notifications) and `messages.send`. Anything else throws, including `messages.modify`, `batchModify`, `threads.modify`, trash, delete, labels and drafts.
-- **No label changes:** the app never adds or removes labels, so Gmail's UNREAD flag, archiving and the rest of your inbox stay exactly as they are.
-- **Same rules for every account:** each added account gets exactly the same two scopes and goes through the same allowlist.
-- **Read/unread lives in Supabase only** (`emails.is_read`). Opening an email in the Review view, accepting or declining marks it read in the dashboard; "Mark read/unread" toggles it there.
+- **Scopes:** connecting a mailbox asks for `gmail.readonly`, `gmail.send` and `gmail.modify`. `gmail.modify` is there only so read/unread can be copied to Gmail; the allowlist below limits it to the UNREAD label. No full mail access (`https://mail.google.com/`), and no `include_granted_scopes`, so older, broader grants are never inherited; any other scope is refused. Signing in to the dashboard asks only for `openid email` (who you are) and gives the app no access to your mailbox.
+- **Allowlist:** every Gmail request goes through `src/lib/google.ts`, which checks it against `src/lib/gmail-policy.ts` before sending. Only these calls are allowed: `getProfile`, `messages.list`, `messages.get`, `history.list` (all read-only), `watch` (push notifications), `messages.send`, and two read/unread calls: `messages.batchModify` that only removes `UNREAD`, and `messages.modify` that only adds `UNREAD`. The request body of those two is checked too. Anything else throws, including other labels (INBOX, STARRED, TRASH…), archive, `threads.modify`, trash, delete, label admin and drafts.
+- **Same rules for every account:** each added account gets exactly the same scopes and goes through the same allowlist.
+- **Read/unread is copied to Gmail** (`src/lib/read-sync.ts`). The dashboard's copy (`emails.is_read`) changes first; then Gmail's UNREAD label follows, so Gmail and apps that mirror it (Spark, the Gmail app) show the same. Opening an email in the Review view, approving or declining marks it read; "Mark read/unread" toggles it. Marking read also marks the earlier inbound emails in that thread read (a conversation shows as unread while any message in it is), but never later ones. Goodshuffle wish-list notices the dashboard hides on its own are marked read in the dashboard only.
+- **Older connections:** an inbox connected before `gmail.modify` was added keeps working; read/unread just stays in the dashboard, and a note with a **Reconnect** button appears until it is reconnected once. Reconnecting with the new permission also marks read in Gmail the emails from the last 30 days that were already read in the dashboard. A Gmail error never undoes the dashboard change.
 - **Replies** go out with `messages.send` using the original `threadId` plus `In-Reply-To`/`References`, so they land in the same conversation. Gmail itself puts sent mail in Sent, as it does for any email you send.
-- **Enforced by tests:** `npm test` fails if any file contains label-modifying Gmail code, if the scopes change, or if any file other than `lib/google.ts` calls the Gmail API.
+- **Enforced by tests:** `npm test` fails if a read/unread request could touch any label other than UNREAD, if any file other than `lib/gmail-policy.ts` spells out a label change, if the scopes change, or if any file other than `lib/google.ts` calls the Gmail API.
 
 ## Stack
 
@@ -39,7 +39,8 @@ src/
   app/api/cron/renew-watch  daily: renew Gmail watch + catch-up sync
   app/actions.ts        server actions (accept, decline, revise, link project, …)
   lib/google.ts         OAuth + Gmail REST calls (the only file that talks to Gmail)
-  lib/gmail-policy.ts   allowed scopes + allowlist of Gmail calls (read-only + send)
+  lib/gmail-policy.ts   allowed scopes + allowlist of Gmail calls (read-only, send, UNREAD label)
+  lib/read-sync.ts      read/unread: dashboard first, then Gmail's UNREAD label
   lib/token-crypto.ts   AES-256-GCM encryption of refresh tokens
   lib/accounts.ts       account list, current-account selection (cookie), switcher counts
   components/AccountSwitcher.tsx  the dropdown
@@ -76,7 +77,7 @@ You'll create four accounts/projects: Google Cloud, Supabase, Anthropic, Vercel.
    - If Leonel's email is a **Google Workspace** address (e.g. `leonel@eventrentalguys.com` on Google Workspace): choose **Internal**. Done — no verification needed.
    - If it's a regular **@gmail.com** address, or you'll add mailboxes from different domains: choose **External**, add each address under **Test users**, then go back to **Audience** and click **Publish app** (status *In production*). Google will show an "unverified app" warning at sign-in — click **Advanced → Go to ERG Client Dashboard**. This is fine for a single private user. *(If you leave it in "Testing", Google expires the Gmail permission every 7 days and Leonel has to sign in again.)*
    - With **Internal**, only accounts in that Workspace organisation can be added; to add an outside @gmail.com account use External.
-4. **Data access → Add or remove scopes**: add only `.../auth/gmail.readonly` and `.../auth/gmail.send`. Save. Do **not** add `gmail.modify` or `https://mail.google.com/`.
+4. **Data access → Add or remove scopes**: add `.../auth/gmail.readonly`, `.../auth/gmail.send` and `.../auth/gmail.modify` (read/unread only; see Gmail safety). Save. Do **not** add `https://mail.google.com/`.
 
 ### 3. OAuth client credentials
 
@@ -124,11 +125,11 @@ npm install
 npm run dev
 ```
 
-Open <http://localhost:3000> and **Sign in with Google** as the address in `ALLOWED_EMAILS`; you become the Owner. Then **+ Add Gmail account** for each inbox (leo@, grovert@, support@), allowing read + send. Each inbox imports its last 14 days of mail, creates client profiles, and gets drafts for unanswered client emails from the last 3 days. Then in Settings: add Grovert under **Team** with his access per inbox, fill in **AI reply rules**, and **Import from my Sent mail** so Claude learns the tone.
+Open <http://localhost:3000> and **Sign in with Google** as the address in `ALLOWED_EMAILS`; you become the Owner. Then **+ Add Gmail account** for each inbox (leo@, grovert@, support@), allowing all the Gmail permissions it asks for. Each inbox imports its last 14 days of mail, creates client profiles, and gets drafts for unanswered client emails from the last 3 days. Then in Settings: add Grovert under **Team** with his access per inbox, fill in **AI reply rules**, and **Import from my Sent mail** so Claude learns the tone.
 
 Deploy: push this folder to a GitHub repo, import it at <https://vercel.com/new>, add every variable from `.env.example` (with `APP_URL=https://YOUR-APP.vercel.app`), deploy. Then finish step 3.3 (redirect URI) and step 4.4 (push subscription), sign in on the deployed URL, and press **Settings → Start push notifications**. `vercel.json` schedules a daily job that, for **each** connected account, renews its Gmail watch when it's within 3 days of expiring (watches last 7 days, so none lapse) and catches up on anything missed.
 
-To add more inboxes later: account switcher → **+ Add Gmail account** (Owner only). Google sign-in runs with the two Gmail scopes; the inbox is imported, gets its own push watch, and becomes the selected one.
+To add more inboxes later: account switcher → **+ Add Gmail account** (Owner only). Google sign-in runs with the three Gmail scopes; the inbox is imported, gets its own push watch, and becomes the selected one.
 
 ## How it works
 
