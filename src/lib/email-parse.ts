@@ -169,6 +169,29 @@ const MARKETING_LABELS = ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FO
 const AUTOMATED_SENDER = /(no-?reply|do-?not-?reply|mailer-daemon|postmaster|notifications?@|bounce)/i;
 const domainOf = (email: string) => email.split("@")[1] ?? "";
 
+// ---------- Mail the team asked not to see ----------
+
+/** Goodshuffle Pro's "New Wish List Submission" notices. Leo doesn't want them shown or drafted (Nov 19). */
+export const WISH_LIST_SUBJECT = /new\s+wish\s*list\s+submission/i;
+/** The same, for a database filter on the stored subject (stored copies don't keep the Goodshuffle sender). */
+export const WISH_LIST_SUBJECT_ILIKE = "%wish%list%submission%";
+
+/**
+ * A stored email that is one of those notices. Stored copies show the customer as the sender, so this
+ * goes by the subject alone, and a reply or forward ("Re: New Wish List Submission") from a real
+ * customer still counts as client mail.
+ */
+export function isWishListNoticeSubject(subject: string | null | undefined): boolean {
+  const s = (subject ?? "").trim();
+  return WISH_LIST_SUBJECT.test(s) && !/^(re|fw|fwd|aw)\s*:/i.test(s);
+}
+
+export function isGoodshuffleWishList(msg: GmailMessage): boolean {
+  if (!WISH_LIST_SUBJECT.test(header(msg, "Subject"))) return false;
+  const senders = [...parseAddressList(header(msg, "From")), ...parseAddressList(header(msg, "Sender"))];
+  return senders.some((a) => /goodshuffle/i.test(a.email) || /goodshuffle/i.test(a.name));
+}
+
 export type InboundContact =
   | { skip: string }
   | { contact: { name: string; email: string }; viaForm: boolean };
@@ -187,6 +210,7 @@ export type InboundContact =
 export function inboundContact(msg: GmailMessage, myEmail: string): InboundContact {
   const from = parseAddressList(header(msg, "From"))[0];
   if (!from) return { skip: "no sender" };
+  if (isGoodshuffleWishList(msg)) return { skip: "goodshuffle wish list" };
   const labels = msg.labelIds ?? [];
   if (labels.some((l) => MARKETING_LABELS.includes(l))) return { skip: "bulk/automated" };
 
