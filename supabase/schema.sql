@@ -263,6 +263,25 @@ create table if not exists agent_commands (
 );
 create index if not exists agent_commands_account_idx on agent_commands(account_id, created_at desc);
 
+-- Goodshuffle project links (same as supabase/migrations/005_goodshuffle_wishlists.sql)
+-- Goodshuffle Pro's "New Wishlist Submission" emails, one row per Goodshuffle project. The dashboard
+-- matches them to clients by name plus email or phone, and puts the project's link on the card.
+create table if not exists goodshuffle_wishlists (
+  id                uuid primary key default gen_random_uuid(),
+  account_id        uuid not null references gmail_accounts(id) on delete cascade,
+  gmail_message_id  text not null,
+  gsp_project_id    text not null,
+  url               text not null,
+  project_name      text,
+  contact_name      text,
+  phone             text,
+  email             text,
+  received_at       timestamptz not null,
+  created_at        timestamptz not null default now(),
+  constraint goodshuffle_wishlists_account_project_key unique (account_id, gsp_project_id)
+);
+create index if not exists goodshuffle_wishlists_account_idx on goodshuffle_wishlists(account_id, received_at desc);
+
 
 -- New draft version in one step: closes the open version and opens the next. Refuses if the given
 -- version is no longer the open one (someone else changed it first).
@@ -310,6 +329,7 @@ alter table app_settings   enable row level security;
 alter table presence       enable row level security;
 alter table quote_requests enable row level security;
 alter table agent_commands enable row level security;
+alter table goodshuffle_wishlists enable row level security;
 
 -- Functions are only for the server (service role), not the public API keys.
 revoke execute on function new_draft_version(uuid, text, text, text) from public, anon, authenticated;

@@ -23,6 +23,7 @@ import { markEmailRead, markEmailUnread } from "@/lib/read-sync";
 import { CHECKLIST_KEY, getChecklist, missingFor, quoteForThread, type QuoteRequest, type Stage } from "@/lib/quotes";
 import { ITEMS_KEY, applyItemChange, cleanGoodshuffleUrl, itemsSummary, mergeInfo, textToItems } from "@/lib/quote-rules";
 import { runCommand, type ProposedChange } from "@/lib/agent-commands";
+import { noAutoLinkKey } from "@/lib/goodshuffle-link";
 
 type Result<T = undefined> = { ok: true; data?: T } | { ok: false; error: string };
 type Ctx = Awaited<ReturnType<typeof requireAccount>>;
@@ -516,6 +517,15 @@ export async function setGoodshuffleLinkAction(id: string, goodshuffleUrl: strin
     const url = goodshuffleUrl.trim() ? cleanGoodshuffleUrl(goodshuffleUrl) : null;
     if (goodshuffleUrl.trim() && !url) throw new Error("Paste the project's link from Goodshuffle Pro (it starts with pro.goodshuffle.com).");
     await moveQuote(c, id, ["gathering", "ready_to_build", "building", "ready_to_send", "approved_to_send", "quote_sent"], { goodshuffle_url: url }, "set_goodshuffle_link");
+    // Removed by hand: the dashboard won't put an automatic link back on this quote.
+    if (!url) {
+      must(
+        await db()
+          .from("app_settings")
+          .upsert({ key: noAutoLinkKey(id), value: now(), updated_by: c.member.email, updated_at: now() })
+          .select("key"),
+      );
+    }
   });
   refreshAll();
   return r;

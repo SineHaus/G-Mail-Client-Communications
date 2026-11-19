@@ -2,7 +2,8 @@ import "server-only";
 import { db, must } from "./db";
 import { env } from "./env";
 import { GmailRateLimitError, gmailFor, getAccount, sleep } from "./google";
-import { extractBody, header, inboundContact, mentionsProjectNumber, parseAddressList, stripQuoted, type GmailMessage } from "./email-parse";
+import { GOODSHUFFLE_WISH_LIST_SKIP, extractBody, header, inboundContact, mentionsProjectNumber, parseAddressList, stripQuoted, type GmailMessage } from "./email-parse";
+import { saveWishlistNotice } from "./goodshuffle-link";
 import { audit } from "./audit";
 
 // Every function here works on ONE Gmail account and scopes every query by account_id.
@@ -54,7 +55,13 @@ export async function ingestMessage(accountId: string, msg: GmailMessage, myEmai
   let shownFrom = from;
   if (direction === "inbound") {
     const who = inboundContact(msg, myEmail);
-    if ("skip" in who) return { status: "skipped", reason: who.skip };
+    if ("skip" in who) {
+      // Goodshuffle's wishlist notices stay out of the queue, but their project links are kept for the cards.
+      if (who.skip === GOODSHUFFLE_WISH_LIST_SKIP) {
+        await saveWishlistNotice(accountId, msg, myEmail).catch((e) => console.error("keeping wishlist notice failed", accountId, e));
+      }
+      return { status: "skipped", reason: who.skip };
+    }
     counterpart = who.contact;
     shownFrom = who.contact;
   } else {
