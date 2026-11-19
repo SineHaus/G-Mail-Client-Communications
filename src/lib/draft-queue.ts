@@ -2,6 +2,7 @@ import "server-only";
 import { db, must } from "./db";
 import { env } from "./env";
 import { generateDrafts } from "./claude";
+import { isWishListNoticeSubject, WISH_LIST_SUBJECT_ILIKE } from "./email-parse";
 
 // Drafting is picked up wherever it left off. A Vercel function stops at its time limit (maxDuration),
 // and before this, an email whose draft hadn't been written by then never got one: only emails stored
@@ -26,12 +27,12 @@ export async function findUndraftedEmails(accountId: string): Promise<string[]> 
   const rows = must(
     await db()
       .from("emails")
-      .select("id,gmail_thread_id,direction,clients!emails_client_fk(ignored)")
+      .select("id,gmail_thread_id,direction,subject,clients!emails_client_fk(ignored)")
       .eq("account_id", accountId)
       .gte("sent_at", cutoff)
       .order("sent_at", { ascending: false })
       .limit(500),
-  ) as unknown as { id: string; gmail_thread_id: string; direction: string; clients: { ignored: boolean } | null }[];
+  ) as unknown as { id: string; gmail_thread_id: string; direction: string; subject: string | null; clients: { ignored: boolean } | null }[];
 
   // Newest first, so the first row seen for a thread is its latest message.
   const seen = new Set<string>();
@@ -39,7 +40,7 @@ export async function findUndraftedEmails(accountId: string): Promise<string[]> 
   for (const r of rows) {
     if (seen.has(r.gmail_thread_id)) continue;
     seen.add(r.gmail_thread_id);
-    if (r.direction === "inbound" && !r.clients?.ignored) candidates.push(r.id);
+    if (r.direction === "inbound" && !r.clients?.ignored && !isWishListNoticeSubject(r.subject)) candidates.push(r.id);
   }
   if (!candidates.length) return [];
 
@@ -87,7 +88,11 @@ async function releaseDraftingLease(accountId: string, token: string) {
  * Returns how many were drafted now and how many are still waiting.
  */
 export async function draftMissing(accountId: string, deadline: number, first: string[] = []) {
-  const ids = [...new Set([...first, ...(await findUndraftedEmails(accountId))])];
+  const hidden = await hideWishListEmails(accountId).catch((e) => {
+    console.error("hiding wish list emails failed", accountId, e);
+    return new Set<string>();
+  });
+  const ids = [...new Set([...first, ...(await findUndraftedEmails(accountId))])].filter((id) => !hidden.has(id));
   if (!ids.length) return { drafted: 0, waiting: 0 };
   const token = await claimDraftingLease(accountId);
   if (!token) return { drafted: 0, waiting: ids.length }; // another run is drafting this inbox right now
@@ -97,4 +102,37 @@ export async function draftMissing(accountId: string, deadline: number, first: s
   } finally {
     await releaseDraftingLease(accountId, token);
   }
+}
+
+/**
+ * Goodshuffle Pro's "New Wish List Submission" notices stored before they were filtered out at import:
+ * close their open drafts (as superseded, which no list shows) and mark them read, so they drop out of
+ * the queue and the unread count. Nothing is deleted. Returns their email ids.
+ */
+export async function hideWishListEmails(accountId: string): Promise<Set<string>> {
+  const rows = must(
+    await db()
+      .from("emails")
+      .select("id,subject")
+      .eq("account_id", accountId)
+      .eq("direction", "inbound")
+      .ilike("subject", WISH_LIST_SUBJECT_ILIKE)
+      .limit(500),
+  ) as { id: string; subject: string | null }[];
+  const ids = rows.filter((r) => isWishListNoticeSubject(r.subject)).map((r) => r.id);
+  if (!ids.length) return new Set();
+  for (let i = 0; i < ids.length; i += 200) {
+    const chunk = ids.slice(i, i + 200);
+    must(
+      await db()
+        .from("drafts")
+        .update({ status: "superseded", updated_at: new Date().toISOString() })
+        .eq("account_id", accountId)
+        .in("email_id", chunk)
+        .eq("status", "pending")
+        .select("id"),
+    );
+    must(await db().from("emails").update({ is_read: true }).eq("account_id", accountId).in("id", chunk).eq("is_read", false).select("id"));
+  }
+  return new Set(ids);
 }

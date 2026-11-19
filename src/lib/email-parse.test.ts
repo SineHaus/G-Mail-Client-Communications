@@ -132,3 +132,32 @@ test("inboundContact: automated mail with no real Reply-To person is still skipp
   assert.deepEqual(inboundContact(mail({ From: "no-reply@forms.example.com", "Reply-To": "leo@theeventrentalguys.com" }), ME), skip);
   assert.deepEqual(inboundContact(mail({ From: "no-reply@forms.example.com", "Reply-To": "noreply@other.com" }), ME), skip);
 });
+
+// ---------- Goodshuffle Pro wish list notices (Leo doesn't want them) ----------
+import { isWishListNoticeSubject } from "./email-parse.ts";
+
+test("inboundContact: Goodshuffle's New Wish List Submission is skipped, even with a customer Reply-To", () => {
+  const notice = mail(
+    { From: "Goodshuffle Pro <notifications@goodshuffle.com>", "Reply-To": "Jane Doe <jane@yahoo.com>", Subject: "New Wish List Submission" },
+    ["INBOX", "CATEGORY_UPDATES"],
+  );
+  assert.deepEqual(inboundContact(notice, ME), { skip: "goodshuffle wish list" });
+  const byName = mail({ From: "Goodshuffle Pro <no-reply@mail.example.com>", Subject: "new wish list submission - Jane" });
+  assert.deepEqual(inboundContact(byName, ME), { skip: "goodshuffle wish list" });
+});
+
+test("inboundContact: other Goodshuffle mail and customers writing about a wish list still count", () => {
+  const other = mail({ From: "Goodshuffle Pro <notifications@goodshuffle.com>", "Reply-To": "Jane Doe <jane@yahoo.com>", Subject: "Quote viewed" }, ["INBOX", "CATEGORY_UPDATES"]);
+  assert.deepEqual(inboundContact(other, ME), { contact: { name: "Jane Doe", email: "jane@yahoo.com" }, viaForm: true });
+  const customer = mail({ From: "Maria Lopez <maria@gmail.com>", Subject: "Re: New Wish List Submission" });
+  assert.deepEqual(inboundContact(customer, ME), { contact: { name: "Maria Lopez", email: "maria@gmail.com" }, viaForm: false });
+});
+
+test("isWishListNoticeSubject: the notice, not replies or forwards", () => {
+  assert.equal(isWishListNoticeSubject("New Wish List Submission"), true);
+  assert.equal(isWishListNoticeSubject("New Wishlist Submission from Jane"), true);
+  assert.equal(isWishListNoticeSubject("Re: New Wish List Submission"), false);
+  assert.equal(isWishListNoticeSubject("Fwd: New Wish List Submission"), false);
+  assert.equal(isWishListNoticeSubject("New Form Submitted"), false);
+  assert.equal(isWishListNoticeSubject(null), false);
+});
