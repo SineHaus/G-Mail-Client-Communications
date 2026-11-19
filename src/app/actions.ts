@@ -19,6 +19,9 @@ import { startWatch } from "@/lib/watch";
 import { disconnectAccount, gmailFor, getAccount } from "@/lib/google";
 import { extractBody, header, stripQuoted } from "@/lib/email-parse";
 import { audit } from "@/lib/audit";
+import { CHECKLIST_KEY, getChecklist, missingFor, quoteForThread, type QuoteRequest, type Stage } from "@/lib/quotes";
+import { ITEMS_KEY, applyItemChange, cleanGoodshuffleUrl, itemsSummary, mergeInfo, textToItems } from "@/lib/quote-rules";
+import { runCommand, type ProposedChange } from "@/lib/agent-commands";
 
 type Result<T = undefined> = { ok: true; data?: T } | { ok: false; error: string };
 type Ctx = Awaited<ReturnType<typeof requireAccount>>;
@@ -425,6 +428,223 @@ export async function saveReplyRulesAction(text: string) {
     await audit(actor, "updated_reply_rules");
   });
   revalidatePath("/settings");
+  return r;
+}
+
+// ---------- Quote checklist (Owner) ----------
+
+export async function saveChecklistAction(text: string) {
+  const r = await runOwner(async (actor) => {
+    must(
+      await db()
+        .from("app_settings")
+        .upsert({ key: CHECKLIST_KEY, value: text.trim(), updated_by: actor, updated_at: now() })
+        .select("key"),
+    );
+    await audit(actor, "updated_quote_checklist");
+  });
+  revalidatePath("/settings");
+  return r;
+}
+
+// ---------- AI agent: quote requests ----------
+// Each step moves a quote request from the stage(s) it must be in to the next one, in one database
+// step, so two people pressing at once can't both move it. Approve steps need send rights
+// (Owner or Approver). Nothing here sends anything to a customer or touches Goodshuffle.
+
+async function moveQuote(c: Ctx, id: string, from: Stage[], fields: Partial<QuoteRequest>, action: string, detail?: string) {
+  const rows = must(
+    await db()
+      .from("quote_requests")
+      .update({ ...fields, updated_by: c.member.email, updated_at: now() })
+      .eq("account_id", c.accountId)
+      .eq("id", id)
+      .in("stage", from)
+      .select("id,title"),
+  ) as { id: string; title: string | null }[];
+  if (!rows[0]) throw new Error("This quote request changed since you opened it. Reload to see the latest.");
+  await audit(c.member.email, action, { accountId: c.accountId, detail: [rows[0].title ?? id, detail].filter(Boolean).join(" · ") });
+}
+
+async function loadQuote(c: Ctx, id: string) {
+  const rows = must(await db().from("quote_requests").select("*").eq("account_id", c.accountId).eq("id", id).limit(1)) as QuoteRequest[];
+  if (!rows[0]) throw new Error("Quote request not found in this account. Refresh the page.");
+  return rows[0];
+}
+
+/** Gate 1: the proposed quote is right, put it together in Goodshuffle. */
+export async function approveBuildAction(id: string) {
+  const r = await run("approve", (c) =>
+    moveQuote(c, id, ["ready_to_build"], { stage: "building", build_approved_by: c.member.email, build_approved_at: now() }, "approved_quote_build"),
+  );
+  refreshAll();
+  return r;
+}
+
+/** The quote is built in Goodshuffle: record its project link and move it to the send gate. */
+export async function markBuiltAction(id: string, goodshuffleUrl: string) {
+  const r = await run("edit", async (c) => {
+    const url = cleanGoodshuffleUrl(goodshuffleUrl);
+    if (!url) throw new Error("Paste the project's link from Goodshuffle Pro (it starts with pro.goodshuffle.com).");
+    await moveQuote(c, id, ["building"], { stage: "ready_to_send", goodshuffle_url: url }, "marked_quote_built");
+  });
+  refreshAll();
+  return r;
+}
+
+/** Gate 2: the quote in Goodshuffle is right and may go to the customer. */
+export async function approveSendAction(id: string) {
+  const r = await run("approve", async (c) => {
+    const q = await loadQuote(c, id);
+    if (!q.goodshuffle_url) throw new Error("Add the Goodshuffle project link first.");
+    await moveQuote(c, id, ["ready_to_send"], { stage: "approved_to_send", send_approved_by: c.member.email, send_approved_at: now() }, "approved_quote_send");
+  });
+  refreshAll();
+  return r;
+}
+
+/** Someone pressed Send To Client in Goodshuffle (phase 1 does this by hand). */
+export async function markQuoteSentAction(id: string) {
+  const r = await run("edit", (c) => moveQuote(c, id, ["approved_to_send"], { stage: "quote_sent" }, "marked_quote_sent"));
+  refreshAll();
+  return r;
+}
+
+export async function setGoodshuffleLinkAction(id: string, goodshuffleUrl: string) {
+  const r = await run("edit", async (c) => {
+    const url = goodshuffleUrl.trim() ? cleanGoodshuffleUrl(goodshuffleUrl) : null;
+    if (goodshuffleUrl.trim() && !url) throw new Error("Paste the project's link from Goodshuffle Pro (it starts with pro.goodshuffle.com).");
+    await moveQuote(c, id, ["gathering", "ready_to_build", "building", "ready_to_send", "approved_to_send", "quote_sent"], { goodshuffle_url: url }, "set_goodshuffle_link");
+  });
+  refreshAll();
+  return r;
+}
+
+/** Hand edits to the answers and items. A request that is now complete moves to "ready to put quote together". */
+export async function updateQuoteAction(id: string, input: { title: string; info: Record<string, string>; itemsText: string }) {
+  const r = await run("edit", async (c) => {
+    const q = await loadQuote(c, id);
+    if (!["gathering", "ready_to_build"].includes(q.stage)) throw new Error("This quote was already approved to build. Change it in Goodshuffle.");
+    const checklist = await getChecklist();
+    const keys = new Set(checklist.map((k) => k.key));
+    const info: Record<string, string> = {};
+    for (const [k, v] of Object.entries(q.info)) info[k] = v;
+    for (const [k, v] of Object.entries(input.info)) if (keys.has(k)) info[k] = v.trim();
+    const items = textToItems(input.itemsText);
+    if (keys.has(ITEMS_KEY)) info[ITEMS_KEY] = items.length ? itemsSummary(items) : "";
+    for (const k of Object.keys(info)) if (!info[k]) delete info[k];
+    const stage: Stage = missingFor({ info }, checklist).length ? q.stage : "ready_to_build";
+    await moveQuote(c, id, [q.stage], { title: input.title.trim() || q.title, info, items, stage }, "edited_quote_request");
+  });
+  refreshAll();
+  return r;
+}
+
+export async function moveQuoteAction(id: string, to: "gathering" | "ready_to_build" | "closed", reason?: string) {
+  const r = await run("edit", async (c) => {
+    if (to === "closed") {
+      await moveQuote(c, id, ["gathering", "ready_to_build", "building", "ready_to_send", "approved_to_send", "quote_sent"], { stage: "closed", closed_reason: reason?.trim() || null }, "closed_quote_request", reason);
+    } else if (to === "ready_to_build") {
+      await moveQuote(c, id, ["gathering"], { stage: "ready_to_build" }, "quote_request_ready_anyway");
+    } else {
+      await moveQuote(c, id, ["ready_to_build", "closed"], { stage: "gathering", closed_reason: null }, "quote_request_back_to_gathering", reason);
+    }
+  });
+  refreshAll();
+  return r;
+}
+
+/** Start tracking an email's thread as a quote request by hand (e.g. one from before the AI agent). */
+export async function startQuoteAction(emailId: string) {
+  const r = await run("edit", async (c) => {
+    const e = must(
+      await db().from("emails").select("id,gmail_thread_id,client_id,subject,clients!emails_client_fk(name,email)").eq("account_id", c.accountId).eq("id", emailId).single(),
+    ) as unknown as { id: string; gmail_thread_id: string; client_id: string | null; subject: string | null; clients: { name: string | null; email: string } | null };
+    const existing = await quoteForThread(c.accountId, e.gmail_thread_id);
+    if (existing) return existing.id;
+    const info = mergeInfo({}, { name: e.clients?.name ?? "", email: e.clients?.email ?? "" });
+    const row = must(
+      await db()
+        .from("quote_requests")
+        .insert({
+          account_id: c.accountId,
+          gmail_thread_id: e.gmail_thread_id,
+          client_id: e.client_id,
+          latest_email_id: e.id,
+          title: e.clients?.name || e.subject || null,
+          info,
+          updated_by: c.member.email,
+        })
+        .select("id")
+        .single(),
+    ) as { id: string };
+    await audit(c.member.email, "started_quote_request", { accountId: c.accountId, emailId });
+    return row.id;
+  });
+  refreshAll();
+  return r;
+}
+
+// ---------- AI agent: command box ----------
+
+export async function runCommandAction(command: string) {
+  const r = await run("edit", async (c) => {
+    const text = command.trim();
+    if (!text) throw new Error("Type what you'd like done.");
+    if (text.length > 2000) throw new Error("That's too long for one command; keep it under 2,000 characters.");
+    await runCommand(c.member.email, c.accountId, text);
+  });
+  refreshAll();
+  return r;
+}
+
+/** Approve or decline a change a command proposed to a quote request. Approve needs send rights. */
+export async function decideCommandChangeAction(commandId: string, approve: boolean) {
+  const r = await run(approve ? "approve" : "edit", async (c) => {
+    const close = async () => {
+      const rows = must(
+        await db()
+          .from("agent_commands")
+          .update({ status: approve ? "applied" : "declined", decided_by: c.member.email, decided_at: now(), updated_at: now() })
+          .eq("account_id", c.accountId)
+          .eq("id", commandId)
+          .eq("status", "needs_approval")
+          .select("id"),
+      ) as { id: string }[];
+      if (!rows[0]) throw new Error("This change was already handled. Reload to see the latest.");
+    };
+    const cmd = (must(
+      await db().from("agent_commands").select("quote_request_id,proposed_change,command,status").eq("account_id", c.accountId).eq("id", commandId).limit(1),
+    ) as { quote_request_id: string | null; proposed_change: ProposedChange | null; command: string; status: string }[])[0];
+    if (!cmd || cmd.status !== "needs_approval") throw new Error("This change was already handled. Reload to see the latest.");
+    if (!approve) {
+      await close();
+      return void (await audit(c.member.email, "declined_quote_change", { accountId: c.accountId, detail: cmd.command.slice(0, 300) }));
+    }
+    const { quote_request_id: qid, proposed_change: ch } = cmd;
+    if (!qid || !ch) throw new Error("Nothing to apply.");
+    // Mark it handled first (so a double press can't apply it twice), then apply it.
+    await close();
+    const q = await loadQuote(c, qid);
+    const checklist = await getChecklist();
+    const keys = new Set(checklist.map((k) => k.key));
+    const info = mergeInfo(q.info, Object.fromEntries(ch.set_answers.filter((a) => keys.has(a.key)).map((a) => [a.key, a.value])));
+    const items = applyItemChange(q.items, ch.add_items, ch.remove_items);
+    if (keys.has(ITEMS_KEY) && items.length) info[ITEMS_KEY] = itemsSummary(items);
+    const late = !["gathering", "ready_to_build"].includes(q.stage);
+    const stage: Stage = q.stage === "gathering" && !missingFor({ info }, checklist).length ? "ready_to_build" : q.stage;
+    const notes = late
+      ? [q.notes, `Changed after it was approved to build (${now().slice(0, 10)}): update the Goodshuffle project to match.`].filter(Boolean).join("\n")
+      : q.notes;
+    try {
+      await moveQuote(c, qid, [q.stage], { info, items, stage, notes }, "applied_quote_change", cmd.command.slice(0, 200));
+    } catch (e) {
+      // Put it back so it can be approved again once the page is reloaded.
+      await db().from("agent_commands").update({ status: "needs_approval", decided_by: null, decided_at: null }).eq("account_id", c.accountId).eq("id", commandId);
+      throw e;
+    }
+  });
+  refreshAll();
   return r;
 }
 

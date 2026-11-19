@@ -7,6 +7,9 @@ import StyleExamples from "@/components/StyleExamples";
 import AccountCard from "@/components/AccountCard";
 import TeamManager from "@/components/TeamManager";
 import ReplyRules from "@/components/ReplyRules";
+import QuoteChecklist from "@/components/QuoteChecklist";
+import { CHECKLIST_KEY } from "@/lib/quotes";
+import { DEFAULT_CHECKLIST } from "@/lib/quote-rules";
 
 export const dynamic = "force-dynamic";
 // Server actions on this page (Sync now, Redraft, Review, Retry) call Claude; give them the full 5 minutes.
@@ -19,7 +22,7 @@ export default async function SettingsPage({ searchParams }: PageProps<"/setting
   const current = await getCurrentAccount(accounts);
   const isOwner = member.is_owner;
 
-  const [styles, rules, team, access, activity] = await Promise.all([
+  const [styles, rules, team, access, activity, checklist] = await Promise.all([
     current
       ? db().from("style_examples").select("id,context,body,created_at").eq("account_id", current.id).order("created_at", { ascending: false })
       : Promise.resolve({ data: [] }),
@@ -27,7 +30,9 @@ export default async function SettingsPage({ searchParams }: PageProps<"/setting
     isOwner ? db().from("team_members").select("id,email,name,is_owner,active,last_login_at").order("created_at") : Promise.resolve({ data: [] }),
     isOwner ? db().from("account_access").select("member_id,account_id,role") : Promise.resolve({ data: [] }),
     isOwner ? db().from("audit_log").select("actor,action,detail,created_at,account_id").order("created_at", { ascending: false }).limit(50) : Promise.resolve({ data: [] }),
+    db().from("app_settings").select("value,updated_by,updated_at").eq("key", CHECKLIST_KEY).maybeSingle(),
   ]);
+  const checklistRow = checklist.data as { value: string; updated_by: string | null; updated_at: string } | null;
   const rulesRow = rules.data as { value: string; updated_by: string | null; updated_at: string } | null;
   const acctName = Object.fromEntries(accounts.map((a) => [a.id, a.email_address]));
 
@@ -94,6 +99,20 @@ export default async function SettingsPage({ searchParams }: PageProps<"/setting
           initial={rulesRow?.value ?? ""}
           canEdit={isOwner}
           updated={rulesRow ? `Last changed ${fmtDate(rulesRow.updated_at)}${rulesRow.updated_by ? ` by ${rulesRow.updated_by.split("@")[0]}` : ""}` : null}
+        />
+      </section>
+
+      <section className="card p-5">
+        <h2 className="font-semibold">Quote checklist</h2>
+        <p className="mb-4 text-sm text-stone-500">
+          What the AI agent needs before a quote can be put together, one item per line. Claude asks customers for whatever is missing, and a quote request moves to
+          “Ready to put quote together” once every item has an answer. Add “(optional)” to a line to have Claude ask once without holding the quote up.
+        </p>
+        <QuoteChecklist
+          initial={checklistRow?.value ?? DEFAULT_CHECKLIST}
+          isDefault={!checklistRow}
+          canEdit={isOwner}
+          updated={checklistRow ? `Last changed ${fmtDate(checklistRow.updated_at)}${checklistRow.updated_by ? ` by ${checklistRow.updated_by.split("@")[0]}` : ""}` : null}
         />
       </section>
 
