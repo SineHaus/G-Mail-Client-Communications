@@ -28,7 +28,9 @@ export function describeRefusedKey(raw: string | undefined | null): string {
   let why = "";
   if (/^sk-ant-api03-/i.test(key) && key.length !== API03_KEY_LENGTH)
     why = ` A full API key is ${API03_KEY_LENGTH} characters, so ${key.length < API03_KEY_LENGTH ? "part of it is missing" : "something extra was pasted with it"}. Copy it again with the Copy button in the Anthropic Console.`;
-  else if (/^sk-ant-admin/i.test(key)) why = " It's an Admin key, which can't write drafts; make a regular API key instead.";
-  else if (!/^sk-ant-/i.test(key)) why = " It doesn't start with sk-ant-, so it may be incomplete or not an Anthropic API key.";
+  else if (/^sk-ant-/i.test(key) && !/^sk-ant-api03-/i.test(key)) {
+    const kind = key.match(/^sk-ant-([a-z]+)/i)?.[1] ?? "";
+    why = ` It starts with sk-ant-${kind}, not sk-ant-api03-, so it isn't a regular API key. Make one in the Anthropic Console under API Keys.`;
+  } else if (!/^sk-ant-/i.test(key)) why = " It doesn't start with sk-ant-api03-, so it may be incomplete or not an Anthropic API key.";
   return `${which} was refused by Anthropic.${why} Check that the same key is active in the Anthropic Console and saved as ANTHROPIC_API_KEY in Vercel, then redeploy.`;
 }
