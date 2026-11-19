@@ -110,6 +110,8 @@ Push needs a public HTTPS URL, so it only works on the deployed app. Locally, us
 
 Create an API key at <https://console.anthropic.com/> → `ANTHROPIC_API_KEY`. Drafts use `claude-opus-5-5` by default (override with `ANTHROPIC_MODEL`). Requests opt into Anthropic's server-side refusal fallback, so a declined request is retried on a fallback model automatically.
 
+After changing `ANTHROPIC_API_KEY` (or any other environment variable) in Vercel, redeploy: a running deployment keeps the old value. Drafts that failed with "The Anthropic API key was refused" stay as red cards until someone taps **Retry draft**.
+
 ### 6b. Token encryption key
 
 Generate `TOKEN_ENCRYPTION_KEY` with `openssl rand -base64 32`. Every account's Google refresh token is encrypted with it (AES-256-GCM) before it's written to Supabase, and it's decrypted only on the server when calling Gmail. Tokens never reach the browser. Don't change the key later, or every account will need reconnecting.
