@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Suspense } from "react";
 import { db, must } from "@/lib/db";
 import type { Client, Draft, Email, Project } from "@/lib/types";
-import { presenceCutoff, timeAgo } from "@/lib/format";
+import { fmtDate, presenceCutoff, timeAgo } from "@/lib/format";
 import { getCurrentAccount } from "@/lib/accounts";
 import { requireMember } from "@/lib/team";
 import { can } from "@/lib/permissions";
@@ -161,7 +161,7 @@ export default async function EmailPage({ searchParams }: PageProps<"/communicat
                         : `Handled outside${r.decided_by ? ` · ${r.decided_by.includes("@") ? r.decided_by.split("@")[0] : r.decided_by}` : ""}`}
                   </div>
                   {r.error && !r.body ? (
-                    <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">Couldn&apos;t draft a reply: {r.error}</p>
+                    <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">Couldn&apos;t draft a reply ({fmtDate(r.updated_at)}): {r.error}</p>
                   ) : (
                     <>
                       <Expandable text={r.body} lines={10} />
