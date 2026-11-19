@@ -245,7 +245,7 @@ export default async function AgentPage({ searchParams }: PageProps<"/">) {
                   <div className="bg-stone-50/60 p-4">
                     <div className="label">Claude&apos;s draft</div>
                     {r.error && !r.body ? (
-                      <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">Couldn&apos;t draft a reply: {r.error}</p>
+                      <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">Couldn&apos;t draft a reply ({fmtDate(r.updated_at)}): {r.error}</p>
                     ) : (
                       <Expandable text={r.body} lines={7} />
                     )}

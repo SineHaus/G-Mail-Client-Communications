@@ -5,12 +5,20 @@ import { z } from "zod";
 import { db, must } from "./db";
 import { env } from "./env";
 import { visibleProjectIds } from "./accounts";
+import { cleanApiKey, describeRefusedKey } from "./anthropic-key";
 import { newDraftVersion } from "./drafts";
 import { agentTablesReady, getChecklist, intakePrompt, quoteForThread, recordIntake } from "./quotes";
 
-// Reads ANTHROPIC_API_KEY. One retry: drafting runs inside a time-limited Vercel function, so a slow
-// call must not use up the whole run (the SDK's default is a 10 minute timeout with 2 retries).
-const client = new Anthropic({ maxRetries: 1 });
+// The key comes from ANTHROPIC_API_KEY, cleaned of quotes, spaces and line breaks a paste can add. Passing it
+// (and the address) explicitly means a stray ANTHROPIC_AUTH_TOKEN or ANTHROPIC_BASE_URL in Vercel can't take over.
+// One retry: drafting runs inside a time-limited Vercel function, so a slow call must not use up the whole run
+// (the SDK's default is a 10 minute timeout with 2 retries).
+const apiKey = cleanApiKey(process.env.ANTHROPIC_API_KEY);
+const client = new Anthropic({
+  ...(apiKey ? { apiKey } : {}),
+  baseURL: "https://api.anthropic.com",
+  maxRetries: 1,
+});
 
 /** Longest a single Claude call may take before it's given up (and shown with a Retry button). */
 const CALL_TIMEOUT_MS = 150_000;
@@ -189,8 +197,9 @@ export async function ask<T extends z.ZodType>(
     messages,
   }, { timeout }).catch((e: unknown) => {
     if (e instanceof Anthropic.APIConnectionTimeoutError) throw new Error("Claude took too long to write this draft. Tap Retry.");
-    if (e instanceof Anthropic.AuthenticationError)
-      throw new Error("The Anthropic API key was refused. Check ANTHROPIC_API_KEY in Vercel → Settings → Environment Variables.");
+    if (e instanceof Anthropic.AuthenticationError) throw new Error(describeRefusedKey(process.env.ANTHROPIC_API_KEY));
+    if (e instanceof Anthropic.PermissionDeniedError)
+      throw new Error(`Anthropic accepted the key but won't let it write drafts (${e.message}). Check the key's workspace and billing in the Anthropic Console.`);
     if (e instanceof Anthropic.NotFoundError)
       throw new Error(`The Claude model "${env.anthropicModel()}" wasn't found. Check ANTHROPIC_MODEL in Vercel, or remove it to use the default.`);
     throw e;
