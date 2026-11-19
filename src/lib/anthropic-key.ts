@@ -16,6 +16,9 @@ export function cleanApiKey(raw: string | undefined | null): string | undefined 
   return v || undefined;
 }
 
+/** sk-ant-api03- + 93 characters + "AA" (the format secret scanners match). */
+const API03_KEY_LENGTH = 108;
+
 /** Plain words for a refused key, safe to show on the dashboard (no secret). */
 export function describeRefusedKey(raw: string | undefined | null): string {
   const key = cleanApiKey(raw);
@@ -23,7 +26,9 @@ export function describeRefusedKey(raw: string | undefined | null): string {
   const tail = key.length > 8 ? key.slice(-4) : "";
   const which = tail ? `The key ending in ${tail} (${key.length} characters)` : `The key (${key.length} characters)`;
   let why = "";
-  if (/^sk-ant-admin/i.test(key)) why = " It's an Admin key, which can't write drafts; make a regular API key instead.";
+  if (/^sk-ant-api03-/i.test(key) && key.length !== API03_KEY_LENGTH)
+    why = ` A full API key is ${API03_KEY_LENGTH} characters, so ${key.length < API03_KEY_LENGTH ? "part of it is missing" : "something extra was pasted with it"}. Copy it again with the Copy button in the Anthropic Console.`;
+  else if (/^sk-ant-admin/i.test(key)) why = " It's an Admin key, which can't write drafts; make a regular API key instead.";
   else if (!/^sk-ant-/i.test(key)) why = " It doesn't start with sk-ant-, so it may be incomplete or not an Anthropic API key.";
   return `${which} was refused by Anthropic.${why} Check that the same key is active in the Anthropic Console and saved as ANTHROPIC_API_KEY in Vercel, then redeploy.`;
 }

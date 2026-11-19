@@ -7,7 +7,7 @@ export function fmtDate(iso: string | null | undefined, withTime = true) {
     day: "numeric",
     ...(sameYear ? {} : { year: "numeric" }),
     ...(withTime ? { hour: "numeric", minute: "2-digit" } : {}),
-    timeZone: process.env.NEXT_PUBLIC_TIMEZONE || undefined,
+    timeZone: process.env.NEXT_PUBLIC_TIMEZONE || "America/New_York", // TERG is in New Jersey; servers run on UTC
   });
 }
 
