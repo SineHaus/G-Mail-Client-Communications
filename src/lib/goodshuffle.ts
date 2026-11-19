@@ -199,3 +199,137 @@ export function matchWishlist(person: Person, wishlists: WishlistRow[], at: stri
   const why = best.strong && !best.inWindow ? `${best.why}, but from ${best.w.received_at.slice(0, 10)}` : `${best.why} only`;
   return { wishlist: best.w, level: "possible", why };
 }
+
+// ---------- Project numbers in email subjects ----------
+// Goodshuffle's own quote and invoice emails put the project number in the subject, e.g.
+// "Quote for Emma Hutton (Project #232032021)", and customers reply on the same subject. That covers
+// the projects built by hand, which most are (wishlists are rare).
+
+const SUBJECT_PROJECT = /\bProject\s*#\s?(\d{6,})\b/gi;
+
+/** The Goodshuffle project numbers written in an email subject ("Project #232032021"), in order, no repeats. */
+export function projectIdsInSubject(subject: string | null | undefined): string[] {
+  const out: string[] = [];
+  for (const m of (subject ?? "").matchAll(SUBJECT_PROJECT)) if (!out.includes(m[1])) out.push(m[1]);
+  return out;
+}
+
+/** One stored email whose subject names a Goodshuffle project. */
+export interface ProjectMention {
+  gsp_project_id: string;
+  subject: string;
+  gmail_thread_id: string;
+  /** The customer's side of the email: the sender of an inbound one, the recipients of an outbound one. */
+  emails: string[];
+  sent_at: string;
+}
+
+export interface MentionEmailRow {
+  gmail_thread_id: string;
+  direction: "inbound" | "outbound";
+  from_address: string | null;
+  to_addresses: string | null;
+  subject: string | null;
+  sent_at: string;
+}
+
+/** Turn stored emails into project mentions (one per project number in each subject). */
+export function mentionsFromEmails(rows: MentionEmailRow[]): ProjectMention[] {
+  const out: ProjectMention[] = [];
+  for (const r of rows) {
+    const ids = projectIdsInSubject(r.subject);
+    if (!ids.length) continue;
+    const emails =
+      r.direction === "inbound"
+        ? [r.from_address?.trim().toLowerCase()].filter(Boolean)
+        : parseAddressList(r.to_addresses ?? "").map((a) => a.email);
+    for (const id of ids) {
+      out.push({ gsp_project_id: id, subject: r.subject ?? "", gmail_thread_id: r.gmail_thread_id, emails: emails as string[], sent_at: r.sent_at });
+    }
+  }
+  return out;
+}
+
+const FREE_MAIL = new Set(["gmail.com", "googlemail.com", "yahoo.com", "outlook.com", "hotmail.com", "live.com", "icloud.com", "me.com", "aol.com", "msn.com"]);
+const domainOf = (e: string) => e.split("@")[1]?.toLowerCase() ?? "";
+
+/**
+ * Addresses that can identify a customer: drops this inbox's own address and, unless it's a free-mail
+ * domain, every address on the business's own domain (a quote forwarded from logistics@ isn't the customer).
+ */
+export function customerEmails(emails: (string | null | undefined)[], ownEmail: string): string[] {
+  const own = ownEmail.trim().toLowerCase();
+  const ownDomain = FREE_MAIL.has(domainOf(own)) ? null : domainOf(own);
+  return [...new Set(emails.map((e) => e?.trim().toLowerCase()).filter((e): e is string => !!e && e.includes("@")))].filter(
+    (e) => e !== own && (!ownDomain || domainOf(e) !== ownDomain),
+  );
+}
+
+/** A mention as the row shape the cards show (no contact name or phone in a subject). */
+function mentionRow(m: ProjectMention): WishlistRow {
+  return {
+    gsp_project_id: m.gsp_project_id,
+    url: goodshuffleProjectUrl(m.gsp_project_id),
+    project_name: m.subject.replace(/^(?:\s*(?:re|fwd?|fw)\s*:\s*)+/i, "").trim() || null,
+    contact_name: null,
+    phone: null,
+    email: m.emails[0] ?? null,
+    received_at: m.sent_at,
+  };
+}
+
+/** A project number counts for this request when it was emailed no earlier than this before the request. */
+const MENTION_BEFORE_DAYS = 30;
+
+/**
+ * Find the Goodshuffle project for a quote from project numbers in email subjects: in the quote's own
+ * Gmail thread, or in emails with the customer's address. "linked" when exactly one project number fits
+ * from around or after the request; several, or only older ones (a past event?), are "possible".
+ */
+export function matchProjectMention(
+  person: Pick<Person, "emails">,
+  threadId: string | null,
+  mentions: ProjectMention[],
+  at: string,
+  ownEmail: string,
+): GoodshuffleMatch | null {
+  const emails = new Set(customerEmails(person.emails, ownEmail));
+  const when = new Date(at).getTime();
+  const hits = mentions
+    .map((m) => ({
+      m,
+      sameThread: !!threadId && m.gmail_thread_id === threadId,
+      emailHit: m.emails.some((e) => emails.has(e)),
+    }))
+    .filter((h) => h.sameThread || h.emailHit)
+    .sort((a, b) => b.m.sent_at.localeCompare(a.m.sent_at));
+  if (!hits.length) return null;
+  const whyOf = (h: (typeof hits)[number]) =>
+    h.sameThread ? "project number in this email thread" : `project number in an email with ${h.m.emails.find((e) => emails.has(e))}`;
+
+  // The quote's own thread names one project: that's it.
+  const threadIds = [...new Set(hits.filter((h) => h.sameThread).map((h) => h.m.gsp_project_id))];
+  if (threadIds.length === 1) return { wishlist: mentionRow(hits.find((h) => h.sameThread)!.m), level: "linked", why: whyOf(hits.find((h) => h.sameThread)!) };
+
+  const recent = hits.filter((h) => Number.isNaN(when) || new Date(h.m.sent_at).getTime() >= when - MENTION_BEFORE_DAYS * DAY);
+  const recentIds = [...new Set(recent.map((h) => h.m.gsp_project_id))];
+  if (recentIds.length === 1) return { wishlist: mentionRow(recent[0].m), level: "linked", why: whyOf(recent[0]) };
+  if (recentIds.length > 1) {
+    return { wishlist: mentionRow(recent[0].m), level: "possible", why: `${recentIds.length} Goodshuffle projects in this client's emails, newest shown` };
+  }
+  return { wishlist: mentionRow(hits[0].m), level: "possible", why: `${whyOf(hits[0])}, but from ${hits[0].m.sent_at.slice(0, 10)}` };
+}
+
+/**
+ * The better of two matches: a sure one before a possible one, else the first (the wishlist's). Two
+ * sure matches that name different projects are only possible: a person should check.
+ */
+export function bestMatch(a: GoodshuffleMatch | null, b: GoodshuffleMatch | null): GoodshuffleMatch | null {
+  if (!a) return b;
+  if (!b) return a;
+  if (a.level === "linked" && b.level === "linked" && a.wishlist.gsp_project_id !== b.wishlist.gsp_project_id) {
+    return { wishlist: b.wishlist, level: "possible", why: "the wishlist and the emails name different Goodshuffle projects" };
+  }
+  if (a.level === b.level) return a;
+  return a.level === "linked" ? a : b;
+}

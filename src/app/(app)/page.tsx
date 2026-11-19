@@ -15,8 +15,8 @@ import NoAccount from "@/components/NoAccount";
 import AccountHealth from "@/components/AccountHealth";
 import SyncButton from "@/components/SyncButton";
 import { ChangeActions, GoodshuffleLinkEditor, QuoteEditor, QuoteStageActions, StartQuoteButton, UseGoodshuffleLinkButton } from "@/components/QuoteActions";
-import { loadWishlists, personForClient, personForQuote, wishlistTableReady } from "@/lib/goodshuffle-link";
-import { matchWishlist, type GoodshuffleMatch } from "@/lib/goodshuffle";
+import { loadProjectMentions, loadWishlists, matchQuote, personForClient, wishlistTableReady } from "@/lib/goodshuffle-link";
+import { goodshuffleProjectUrl, matchWishlist, projectIdsInSubject, type GoodshuffleMatch } from "@/lib/goodshuffle";
 
 export const dynamic = "force-dynamic";
 // The command box and Redraft call Claude; give them the full 5 minutes.
@@ -67,7 +67,7 @@ export default async function AgentPage({ searchParams }: PageProps<"/">) {
   const canApprove = can(acct.role, "approve");
   const ready = await agentTablesReady(acct.id);
 
-  const [draftsRes, quotesRes, commandsRes, checklist, wishlists, gspReady] = await Promise.all([
+  const [draftsRes, quotesRes, commandsRes, checklist, wishlists, gspReady, mentions] = await Promise.all([
     db()
       .from("drafts")
       .select("*, emails!drafts_email_fk!inner(*, clients!emails_client_fk(*))")
@@ -84,6 +84,7 @@ export default async function AgentPage({ searchParams }: PageProps<"/">) {
     getChecklist(),
     loadWishlists(acct.id),
     wishlistTableReady(acct.id),
+    loadProjectMentions(acct.id),
   ]);
   const drafts = must(draftsRes) as unknown as DraftRow[];
   const quotes = (must(quotesRes) ?? []) as QuoteRequest[];
@@ -113,8 +114,9 @@ export default async function AgentPage({ searchParams }: PageProps<"/">) {
   };
   const recent = commands.filter((c) => c.status !== "needs_approval").slice(0, 8);
 
-  // Goodshuffle projects, matched from Goodshuffle's wishlist emails (lib/goodshuffle.ts). No Claude calls.
-  const gspFor = (q: QuoteRequest) => matchWishlist(personForQuote(q, q.client_id ? clients.get(q.client_id) : null), wishlists, q.created_at);
+  // Goodshuffle projects, matched from Goodshuffle's wishlist emails and the project numbers in its
+  // quote and invoice subjects (lib/goodshuffle.ts). No Claude calls.
+  const gspFor = (q: QuoteRequest) => matchQuote(q, q.client_id ? clients.get(q.client_id) : null, wishlists, mentions, acct.email_address);
   const quoteCard = (q: QuoteRequest) => (
     <QuoteCard
       key={q.id}
@@ -241,6 +243,9 @@ export default async function AgentPage({ searchParams }: PageProps<"/">) {
             const missing = q ? missingFor(q, checklist) : [];
             const gsp: { url: string; label: string; title?: string } | null = q?.goodshuffle_url
               ? { url: q.goodshuffle_url, label: "Open in Goodshuffle ↗" }
+              : projectIdsInSubject(e.subject).length === 1
+              ? // Goodshuffle's own quote or invoice email (or a reply to it) names its project.
+                { url: goodshuffleProjectUrl(projectIdsInSubject(e.subject)[0]), label: "Open in Goodshuffle ↗", title: "The project number is in the subject" }
               : (() => {
                   const m = q ? gspFor(q) : matchWishlist(personForClient(c), wishlists, e.sent_at);
                   if (!m) return null;
@@ -457,7 +462,7 @@ function QuoteCard({
           )}
           <p className="text-xs text-stone-400">
             Goodshuffle project: {q.goodshuffle_url ? <a className="underline" href={q.goodshuffle_url} target="_blank" rel="noopener noreferrer">open</a> : "not linked yet"}
-            {q.goodshuffle_url && gspMatch?.level === "linked" && gspMatch.wishlist.url === q.goodshuffle_url ? ` (matched from the wishlist: ${gspMatch.why})` : ""}
+            {q.goodshuffle_url && gspMatch?.level === "linked" && gspMatch.wishlist.url === q.goodshuffle_url ? ` (matched: ${gspMatch.why})` : ""}
             {canEdit && q.stage !== "closed" && (
               <>
                 {" · "}

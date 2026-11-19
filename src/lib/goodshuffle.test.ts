@@ -2,7 +2,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { encodeB64Url, type GmailMessage } from "./email-parse.ts";
-import { matchWishlist, namesAgree, normPhone, parseWishlistNotice, type WishlistRow } from "./goodshuffle.ts";
+import {
+  bestMatch,
+  customerEmails,
+  matchProjectMention,
+  matchWishlist,
+  mentionsFromEmails,
+  namesAgree,
+  normPhone,
+  parseWishlistNotice,
+  projectIdsInSubject,
+  type MentionEmailRow,
+  type WishlistRow,
+} from "./goodshuffle.ts";
 
 const ME = "support@theeventrentalguys.com";
 
@@ -148,4 +160,75 @@ test("matchWishlist: a name alone counts once, never when two people share it, n
     null,
   );
   assert.equal(matchWishlist({ names: ["Ann Lee"], emails: ["a@b.com"], phones: [] }, [W({})], AT), null);
+});
+
+// ---------- Project numbers in subjects ----------
+
+test("projectIdsInSubject reads Goodshuffle's quote and invoice subjects", () => {
+  assert.deepEqual(projectIdsInSubject("Re: Quote for Emma Hutton (Project #232032021)"), ["232032021"]);
+  assert.deepEqual(projectIdsInSubject("Invoice for Boudreau - 90 Morningside Rd (Project #231946850)"), ["231946850"]);
+  assert.deepEqual(projectIdsInSubject("Order information Contract #:735988"), []);
+  assert.deepEqual(projectIdsInSubject("Project #12 is too short"), []);
+  assert.deepEqual(projectIdsInSubject(null), []);
+});
+
+test("customerEmails drops this inbox and the business's own domain, not gmail", () => {
+  assert.deepEqual(
+    customerEmails(["logistics@theeventrentalguys.com", "Emmarh@umich.edu", null, "emmarh@umich.edu"], ME),
+    ["emmarh@umich.edu"],
+  );
+  assert.deepEqual(customerEmails(["me@gmail.com", "jane@gmail.com"], "me@gmail.com"), ["jane@gmail.com"]);
+});
+
+const E = (o: Partial<MentionEmailRow>): MentionEmailRow => ({
+  gmail_thread_id: "t-quote-email",
+  direction: "inbound",
+  from_address: "emmarh@umich.edu",
+  to_addresses: ME,
+  subject: "Re: Quote for Emma Hutton (Project #232032021)",
+  sent_at: "2026-11-19T20:00:00.000Z",
+  ...o,
+});
+const QAT = "2026-11-19T18:00:00.000Z";
+const EMMA = { emails: ["logistics@theeventrentalguys.com", "emmarh@umich.edu"] };
+
+test("matchProjectMention: the customer's reply on Goodshuffle's quote email links the project", () => {
+  const m = matchProjectMention(EMMA, "t-form", mentionsFromEmails([E({})]), QAT, ME);
+  assert.equal(m?.level, "linked");
+  assert.equal(m?.wishlist.url, "https://pro.goodshuffle.com/app/project/detail?id=232032021");
+  assert.equal(m?.wishlist.project_name, "Quote for Emma Hutton (Project #232032021)");
+  assert.equal(m?.why, "project number in an email with emmarh@umich.edu");
+});
+
+test("matchProjectMention: outbound emails count by recipient; own-domain addresses never match", () => {
+  const out = E({ direction: "outbound", from_address: ME, to_addresses: "Emma Hutton <emmarh@umich.edu>" });
+  assert.equal(matchProjectMention(EMMA, null, mentionsFromEmails([out]), QAT, ME)?.level, "linked");
+  const internal = E({ from_address: "logistics@theeventrentalguys.com" });
+  assert.equal(matchProjectMention({ emails: ["logistics@theeventrentalguys.com"] }, null, mentionsFromEmails([internal]), QAT, ME), null);
+});
+
+test("matchProjectMention: same thread links even without an address; other clients don't match", () => {
+  const m = matchProjectMention({ emails: [] }, "t-quote-email", mentionsFromEmails([E({ from_address: "x@y.com" })]), QAT, ME);
+  assert.equal(m?.level, "linked");
+  assert.equal(m?.why, "project number in this email thread");
+  assert.equal(matchProjectMention({ emails: ["bob@x.com"] }, "t-other", mentionsFromEmails([E({})]), QAT, ME), null);
+});
+
+test("matchProjectMention: two projects, or only an old one, are possible", () => {
+  const two = mentionsFromEmails([E({}), E({ subject: "Invoice for Hutton (Project #231000001)", sent_at: "2026-11-18T10:00:00.000Z" })]);
+  const m = matchProjectMention(EMMA, null, two, QAT, ME);
+  assert.equal(m?.level, "possible");
+  assert.equal(m?.wishlist.gsp_project_id, "232032021");
+  const old = matchProjectMention(EMMA, null, mentionsFromEmails([E({ sent_at: "2025-06-01T10:00:00.000Z" })]), QAT, ME);
+  assert.equal(old?.level, "possible");
+  assert.match(old!.why, /2025-06-01/);
+});
+
+test("bestMatch prefers a sure match and flags two sure ones that disagree", () => {
+  const sure = (id: string) => ({ wishlist: W({ gsp_project_id: id }), level: "linked" as const, why: "x" });
+  const maybe = { wishlist: W({ gsp_project_id: "9" }), level: "possible" as const, why: "y" };
+  assert.equal(bestMatch(maybe, sure("2"))?.wishlist.gsp_project_id, "2");
+  assert.equal(bestMatch(sure("1"), sure("1"))?.level, "linked");
+  assert.equal(bestMatch(sure("1"), sure("2"))?.level, "possible");
+  assert.equal(bestMatch(null, null), null);
 });
