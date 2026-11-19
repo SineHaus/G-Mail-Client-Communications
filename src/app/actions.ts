@@ -11,7 +11,8 @@ import { ACCOUNT_COOKIE, accountCookieOptions, listAccounts, requireAccount, req
 import { requireMember, memberLabel } from "@/lib/team";
 import type { Permission } from "@/lib/permissions";
 import { approveDraft } from "@/lib/send";
-import { generateDraft, generateDrafts, reviseDraft } from "@/lib/claude";
+import { generateDraft, reviseDraft } from "@/lib/claude";
+import { draftDeadline, draftMissing } from "@/lib/draft-queue";
 import { newDraftVersion } from "@/lib/drafts";
 import { syncHistory, syncRecent } from "@/lib/ingest";
 import { startWatch } from "@/lib/watch";
@@ -318,6 +319,7 @@ export async function updateClientAction(
 // ---------- Gmail (per account) ----------
 
 export async function syncNowAction(accountId?: string) {
+  const startedAt = Date.now();
   const r = await run("edit", async (c) => {
     const acct = accountId ?? c.accountId;
     if (accountId) await requireRoleOn(accountId, "edit");
@@ -325,10 +327,12 @@ export async function syncNowAction(accountId?: string) {
     // 14-day import again; already-stored messages are skipped, so this is safe to repeat.
     const stored = await db().from("emails").select("id", { count: "exact", head: true }).eq("account_id", acct);
     const { draftEmailIds, results, stoppedEarly } = stored.count ? await syncHistory(acct) : await syncRecent(acct);
-    await generateDrafts(acct, draftEmailIds);
+    // Server actions here run under the page's maxDuration (300 s); what doesn't fit is drafted on the next check.
+    const { drafted, waiting } = await draftMissing(acct, draftDeadline(startedAt, 300), draftEmailIds);
     return {
       imported: results.filter((x) => x.status === "inserted").length,
-      drafted: draftEmailIds.length,
+      drafted,
+      waiting,
       skipped: results.filter((x) => x.status === "skipped" && x.reason === "bulk/automated").length,
       // Gmail's per-minute limit cut the import short; what was stored is kept and the next sync resumes.
       stoppedEarly,

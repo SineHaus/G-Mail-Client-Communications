@@ -7,7 +7,16 @@ import { env } from "./env";
 import { visibleProjectIds } from "./accounts";
 import { newDraftVersion } from "./drafts";
 
-const client = new Anthropic(); // reads ANTHROPIC_API_KEY
+// Reads ANTHROPIC_API_KEY. One retry: drafting runs inside a time-limited Vercel function, so a slow
+// call must not use up the whole run (the SDK's default is a 10 minute timeout with 2 retries).
+const client = new Anthropic({ maxRetries: 1 });
+
+/** Longest a single Claude call may take before it's given up (and shown with a Retry button). */
+const CALL_TIMEOUT_MS = 150_000;
+/** A new draft is started only if at least this much time is left before the run's deadline. */
+const MIN_TIME_FOR_A_DRAFT_MS = 100_000;
+/** Drafts written at the same time. */
+const DRAFT_CONCURRENCY = 3;
 
 export const SIGNATURE = "Leonel\nThe Event Rental Guys";
 
@@ -140,8 +149,13 @@ async function replyRules(): Promise<string> {
     : "";
 }
 
-async function ask<T extends z.ZodType>(schema: T, messages: Anthropic.Beta.BetaMessageParam[]): Promise<z.infer<T>> {
+async function ask<T extends z.ZodType>(
+  schema: T,
+  messages: Anthropic.Beta.BetaMessageParam[],
+  deadline?: number,
+): Promise<z.infer<T>> {
   const system = SYSTEM + (await replyRules());
+  const timeout = deadline ? Math.max(30_000, Math.min(CALL_TIMEOUT_MS, deadline - Date.now())) : CALL_TIMEOUT_MS;
   const res = await client.beta.messages.parse({
     model: env.anthropicModel(),
     max_tokens: 16000,
@@ -150,6 +164,13 @@ async function ask<T extends z.ZodType>(schema: T, messages: Anthropic.Beta.Beta
     output_config: { effort: "medium", format: betaZodOutputFormat(schema) },
     system,
     messages,
+  }, { timeout }).catch((e: unknown) => {
+    if (e instanceof Anthropic.APIConnectionTimeoutError) throw new Error("Claude took too long to write this draft. Tap Retry.");
+    if (e instanceof Anthropic.AuthenticationError)
+      throw new Error("The Anthropic API key was refused. Check ANTHROPIC_API_KEY in Vercel → Settings → Environment Variables.");
+    if (e instanceof Anthropic.NotFoundError)
+      throw new Error(`The Claude model "${env.anthropicModel()}" wasn't found. Check ANTHROPIC_MODEL in Vercel, or remove it to use the default.`);
+    throw e;
   });
   if (res.stop_reason === "refusal") throw new Error("Claude declined to draft a reply for this email.");
   if (res.stop_reason === "max_tokens") throw new Error("Claude's reply was cut off; try again.");
@@ -158,15 +179,28 @@ async function ask<T extends z.ZodType>(schema: T, messages: Anthropic.Beta.Beta
 }
 
 /** Create a pending draft for an inbound email of `accountId`. Never sends anything. */
-export async function generateDraft(accountId: string, emailId: string) {
+export async function generateDraft(accountId: string, emailId: string, deadline?: number) {
+  // Another run may have drafted it meanwhile; don't ask Claude twice for the same email.
+  const open = await db()
+    .from("drafts")
+    .select("id")
+    .eq("account_id", accountId)
+    .eq("email_id", emailId)
+    .in("status", ["pending", "sending"])
+    .limit(1);
+  if (open.data?.length) return;
   try {
     const { context, projects } = await buildContext(emailId, accountId);
-    const out = await ask(DraftSchema, [
-      {
-        role: "user",
-        content: `${context}\n\nDraft Leonel's reply to the latest client email in <current_thread>.`,
-      },
-    ]);
+    const out = await ask(
+      DraftSchema,
+      [
+        {
+          role: "user",
+          content: `${context}\n\nDraft Leonel's reply to the latest client email in <current_thread>.`,
+        },
+      ],
+      deadline,
+    );
     const num = out.suggested_project_number?.replace(/^#/, "").trim();
     const suggested = num ? projects.find((p) => p.project_number === num) : undefined;
     const ins = await db().from("drafts").insert({
@@ -193,8 +227,23 @@ export async function generateDraft(accountId: string, emailId: string) {
   }
 }
 
-export async function generateDrafts(accountId: string, emailIds: string[]) {
-  for (const id of emailIds) await generateDraft(accountId, id);
+/**
+ * Draft `emailIds` of `accountId`, a few at a time. With a `deadline` (epoch ms), no new draft is started
+ * once too little time is left; the rest are returned as `left` and picked up by the next check.
+ */
+export async function generateDrafts(accountId: string, emailIds: string[], deadline?: number) {
+  let next = 0;
+  let drafted = 0;
+  const timeLeft = () => !deadline || deadline - Date.now() >= MIN_TIME_FOR_A_DRAFT_MS;
+  const worker = async () => {
+    while (next < emailIds.length && timeLeft()) {
+      const id = emailIds[next++];
+      await generateDraft(accountId, id, deadline);
+      drafted++;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(DRAFT_CONCURRENCY, emailIds.length) }, worker));
+  return { drafted, left: emailIds.length - next };
 }
 
 /**

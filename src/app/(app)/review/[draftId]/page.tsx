@@ -14,6 +14,8 @@ import MarkReadOnOpen from "@/components/MarkReadOnOpen";
 import ReadToggle from "@/components/ReadToggle";
 
 export const dynamic = "force-dynamic";
+// Server actions on this page (Sync now, Redraft, Review, Retry) call Claude; give them the full 5 minutes.
+export const maxDuration = 300;
 
 export default async function ReviewPage({ params }: PageProps<"/review/[draftId]">) {
   const { draftId } = await params;

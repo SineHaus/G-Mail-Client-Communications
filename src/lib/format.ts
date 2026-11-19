@@ -33,9 +33,12 @@ export function presenceCutoff(seconds = 90) {
 }
 
 /** One line for the result of Sync now, e.g. "12 new · 3 drafted · 40 skipped as automated". */
-export function syncSummary(d: { imported?: number; drafted?: number; skipped?: number; stoppedEarly?: string | null } | undefined) {
+export function syncSummary(
+  d: { imported?: number; drafted?: number; waiting?: number; skipped?: number; stoppedEarly?: string | null } | undefined,
+) {
   return (
     `${d?.imported ?? 0} new · ${d?.drafted ?? 0} drafted` +
+    (d?.waiting ? ` · ${d.waiting} more drafting in the background` : "") +
     (d?.skipped ? ` · ${d.skipped} skipped as automated` : "") +
     (d?.stoppedEarly ? " · paused by Gmail's limit, wait a minute and tap again" : "")
   );
