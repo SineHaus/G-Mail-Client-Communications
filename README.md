@@ -109,7 +109,7 @@ Push needs a public HTTPS URL, so it only works on the deployed app. Locally, us
 
 ### 6. Anthropic
 
-Create an API key at <https://console.anthropic.com/> → `ANTHROPIC_API_KEY`. Drafts use `claude-opus-5-5` by default (override with `ANTHROPIC_MODEL`). Requests opt into Anthropic's server-side refusal fallback, so a declined request is retried on a fallback model automatically.
+Create an API key at <https://console.anthropic.com/> → `ANTHROPIC_API_KEY`. Drafts use `claude-opus-5-5` by default (override with `ANTHROPIC_MODEL`). To spend less, set `ANTHROPIC_MODEL=claude-sonnet-5-5` (about half the price per draft). `ANTHROPIC_EFFORT` sets how hard Claude thinks before writing: `low` (default, cheapest), `medium` or `high`. Each draft sends 6 style examples, the last 5 emails with the client from other threads and the last 8 messages of the thread, all shortened; the style examples go in the cached part of the system prompt, so drafts written within 5 minutes of each other pay about a tenth for them. Set a monthly spend limit in the Anthropic Console (Limits) as a backstop. Requests opt into Anthropic's server-side refusal fallback, so a declined request is retried on a fallback model automatically.
 
 After changing `ANTHROPIC_API_KEY` (or any other environment variable) in Vercel, redeploy: a running deployment keeps the old value. Drafts that failed with "The Anthropic API key was refused" stay as red cards until someone taps **Retry draft**.
 

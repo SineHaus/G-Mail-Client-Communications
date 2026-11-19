@@ -43,5 +43,10 @@ export const env = {
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean),
   anthropicModel: () => process.env.ANTHROPIC_MODEL ?? "claude-opus-5-5",
+  /** How hard Claude thinks before drafting: low (default, cheapest), medium or high. */
+  anthropicEffort: (): "low" | "medium" | "high" => {
+    const v = (process.env.ANTHROPIC_EFFORT ?? "").trim().toLowerCase();
+    return v === "medium" || v === "high" ? v : "low";
+  },
   draftLookbackDays: () => Number(process.env.DRAFT_LOOKBACK_DAYS ?? "3"),
 };
