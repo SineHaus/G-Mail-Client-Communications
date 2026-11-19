@@ -4,13 +4,26 @@ import { db, must } from "./db";
 import { audit } from "./audit";
 import { GmailRateLimitError, getAccount, gmailFor, sleep } from "./google";
 import { agentTablesReady, type QuoteRequest } from "./quotes";
-import { matchWishlist, parseWishlistNotice, type GoodshuffleMatch, type Person, type WishlistRow } from "./goodshuffle";
+import {
+  bestMatch,
+  matchProjectMention,
+  matchWishlist,
+  mentionsFromEmails,
+  parseWishlistNotice,
+  type GoodshuffleMatch,
+  type MentionEmailRow,
+  type Person,
+  type ProjectMention,
+  type WishlistRow,
+} from "./goodshuffle";
 import type { GmailMessage } from "./email-parse";
 
-// Goodshuffle project links on cards. Goodshuffle Pro has no API, but its "New Wishlist Submission"
-// emails (skipped from the queue at import) name the project and the customer. They're kept in
-// goodshuffle_wishlists and matched to clients by name plus email or phone. No Claude calls, nothing is
-// sent, and nothing in Goodshuffle or Gmail is changed. Every query is scoped to one account.
+// Goodshuffle project links on cards. Goodshuffle Pro has no API, so the links come from two kinds of
+// email: its "New Wishlist Submission" notices (skipped from the queue at import, kept in
+// goodshuffle_wishlists, matched by name plus email or phone), and the project number Goodshuffle puts
+// in the subject of its quote and invoice emails ("(Project #232032021)"), matched by Gmail thread or
+// the customer's address. No Claude calls, nothing is sent, and nothing in Goodshuffle or Gmail is
+// changed. Every query is scoped to one account.
 
 /** Whether migration 005 has been run (the goodshuffle_wishlists table exists). */
 export const wishlistTableReady = cache(async function wishlistTableReady(accountId: string): Promise<boolean> {
@@ -100,6 +113,32 @@ export async function loadWishlists(accountId: string): Promise<WishlistRow[]> {
   ) as WishlistRow[];
 }
 
+/** Stored emails of `accountId` whose subject names a Goodshuffle project (needs no migration). */
+export async function loadProjectMentions(accountId: string): Promise<ProjectMention[]> {
+  const rows = must(
+    await db()
+      .from("emails")
+      .select("gmail_thread_id,direction,from_address,to_addresses,subject,sent_at")
+      .eq("account_id", accountId)
+      .ilike("subject", "%project #%")
+      .order("sent_at", { ascending: false })
+      .limit(2000),
+  ) as MentionEmailRow[];
+  return mentionsFromEmails(rows);
+}
+
+/** The Goodshuffle project for a quote, from wishlists and from project numbers in subjects. */
+export function matchQuote(
+  q: Pick<QuoteRequest, "info" | "gmail_thread_id" | "created_at">,
+  client: ClientBits | null | undefined,
+  wishlists: WishlistRow[],
+  mentions: ProjectMention[],
+  ownEmail: string,
+): GoodshuffleMatch | null {
+  const person = personForQuote(q, client);
+  return bestMatch(matchWishlist(person, wishlists, q.created_at), matchProjectMention(person, q.gmail_thread_id, mentions, q.created_at, ownEmail));
+}
+
 type ClientBits = { id: string; name: string | null; email: string; phone: string | null };
 
 /** Who a quote request is for: the client on file plus what the customer wrote in the request. */
@@ -116,23 +155,24 @@ export function personForClient(client: ClientBits | null | undefined): Person {
 }
 
 /**
- * Put the Goodshuffle link on every open quote of `accountId` that has none, when exactly one
- * wishlist matches by name plus email or phone around the time of the request. A link someone typed
+ * Put the Goodshuffle link on every open quote of `accountId` that has none, when exactly one project
+ * matches surely: a wishlist by name plus email or phone around the time of the request, or a project
+ * number in the subject of the quote's own thread or of an email with the customer's address. A link someone typed
  * is never replaced, and a quote whose automatic link someone removed is left alone.
  */
 export async function autoLinkQuotes(accountId: string): Promise<number> {
   if (!(await agentTablesReady(accountId))) return 0;
-  const wishlists = await loadWishlists(accountId);
-  if (!wishlists.length) return 0;
+  const [wishlists, mentions, acct] = await Promise.all([loadWishlists(accountId), loadProjectMentions(accountId), getAccount(accountId)]);
+  if (!wishlists.length && !mentions.length) return 0;
   const quotes = must(
     await db()
       .from("quote_requests")
-      .select("id,title,info,client_id,created_at")
+      .select("id,title,info,client_id,gmail_thread_id,created_at")
       .eq("account_id", accountId)
       .is("goodshuffle_url", null)
       .neq("stage", "closed")
       .limit(300),
-  ) as Pick<QuoteRequest, "id" | "title" | "info" | "client_id" | "created_at">[];
+  ) as Pick<QuoteRequest, "id" | "title" | "info" | "client_id" | "gmail_thread_id" | "created_at">[];
   if (!quotes.length) return 0;
   const clientIds = [...new Set(quotes.map((q) => q.client_id).filter(Boolean))] as string[];
   const clients = new Map(
@@ -149,7 +189,7 @@ export async function autoLinkQuotes(accountId: string): Promise<number> {
   let linked = 0;
   for (const q of quotes) {
     if (optedOut.has(noAutoLinkKey(q.id))) continue;
-    const m = matchWishlist(personForQuote(q, q.client_id ? clients.get(q.client_id) : null), wishlists, q.created_at);
+    const m = matchQuote(q, q.client_id ? clients.get(q.client_id) : null, wishlists, mentions, acct.email_address);
     if (m?.level !== "linked") continue;
     const rows = must(
       await db()
@@ -176,8 +216,7 @@ export async function autoLinkQuotes(accountId: string): Promise<number> {
  */
 export async function refreshGoodshuffleLinks(accountId: string, deadline: number) {
   try {
-    if (!(await wishlistTableReady(accountId))) return;
-    await backfillWishlists(accountId, Math.min(deadline - 60_000, Date.now() + 40_000));
+    if (await wishlistTableReady(accountId)) await backfillWishlists(accountId, Math.min(deadline - 60_000, Date.now() + 40_000));
     await autoLinkQuotes(accountId);
   } catch (e) {
     console.error("goodshuffle links failed", accountId, e);
