@@ -7,6 +7,7 @@ import SearchBox from "@/components/SearchBox";
 import { getCurrentAccount } from "@/lib/accounts";
 import { requireMember } from "@/lib/team";
 import NoAccount from "@/components/NoAccount";
+import CommunicationTabs from "@/components/CommunicationTabs";
 
 export const dynamic = "force-dynamic";
 // Server actions on this page (Sync now, Redraft, Review, Retry) call Claude; give them the full 5 minutes.
@@ -42,6 +43,7 @@ export default async function ClientsPage({ searchParams }: PageProps<"/clients"
 
   return (
     <div className="mx-auto max-w-5xl">
+      <CommunicationTabs active="clients" />
       <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Clients</h1>

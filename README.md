@@ -3,11 +3,16 @@
 A web dashboard that connects to one or more Gmail accounts and handles all client communication in one place.
 Claude drafts a reply to every new client email in Leonel's voice. **Nothing is sent until someone with send rights presses Approve.**
 
-- **Queue** (home): every new client email with Claude's draft beside it. **Approve** (sends) / **Review** / **Decline** (handled outside the dashboard). Shows when a teammate has a draft open, and when the agent last checked mail.
+The left panel has three tabs, with Settings at the bottom:
+
+- **AI agent** (home): one approval queue for everything waiting on the team. Claude reads each new client email; when it's a quote request it fills in the request from the thread and its reply asks the customer for whatever on the **quote checklist** is still missing. Once every required item has an answer the request moves to **Ready to put quote together** (Approve), then **Building in Goodshuffle** (paste the project link), then **Ready to send quote** (Approve), then **Quote sent**. Every quote card shows the proposed drop-off and pickup days from Leo's delivery rules (for the team only, never offered to customers), the delivery fee rule, what's always on a quote, anything to check with Leo first, and a link to Goodshuffle Pro. A **command box** takes typed tasks ("add 10 chairs to the Curtin quote", "draft a reply to Ashley about Saturday pickup"); Claude turns each into an email draft or a proposed change, and both wait for Approve. Email drafts sit in the same queue with **Approve** (sends) / **Review** / **Decline**.
+- **Communication**: the email queue (all drafts, Sent and Handled outside), Clients and Projects. Texts and Goodshuffle messages come in a later phase.
+- **Overview**: the numbers this dashboard tracks itself (emails waiting, unread, quote requests by stage). Goodshuffle numbers come later.
 - **Draft review**: full thread, editable draft, "send back to Claude with a note". Every edit or redraft is saved as a new **version**; Approve sends exactly the version on screen.
 - **Clients**: auto-created from email addresses; profile with contact info, notes, projects and full email history.
 - **Projects**: shared across TERG with one numbering. Emails auto-link when a project number appears in them (or the client has one open project); otherwise Claude suggests one, confirmed with a click.
 - **Accounts & team** (Settings): connected Gmail accounts; team members with a role per inbox (Owner, Approver, Editor, Viewer, or no access); editable **AI reply rules**; style examples; activity log.
+- **Quote checklist** (Settings): what a quote needs, one item per line, editable without code.
 - **Account switcher** (top of every page): only the inboxes you have access to, with open-draft and unread counts. The last selected one is remembered.
 
 Drafts live only in this app's database, never in Gmail Drafts. Only the Approve button sends mail (`src/lib/send.ts` is the single code path that calls Gmail's send API), and only for the Owner or an Approver on that inbox.
@@ -42,12 +47,16 @@ src/
   lib/claude.ts         drafting + revision prompts (drafting rules live here)
   lib/draft-queue.ts    finds client emails still without a draft and drafts them within the time left
   lib/send.ts           Approve → send reply in the same Gmail thread
+  lib/quotes.ts         quote requests: checklist, what Claude found in each email, stages
+  lib/quote-rules.ts    checklist parsing, Leo's delivery-day rules, Goodshuffle links (unit-tested)
+  lib/agent-commands.ts the AI agent's command box (drafts and proposed changes only)
   lib/team.ts, lib/permissions.ts   team members, roles per inbox
   lib/drafts.ts         draft versions
   lib/email-parse.ts    MIME parsing, quote stripping, reply building (unit-tested)
   proxy.ts              login guard for every page and API route
 supabase/schema.sql     database schema for a fresh install
 supabase/migrations/003_team_and_shared_projects.sql   upgrade a database that already holds data from the earlier multi-account schema
+supabase/migrations/004_ai_agent.sql   adds the AI agent's two tables (quote_requests, agent_commands); run once on an existing database
 ```
 
 ## Setup, step by step
@@ -140,6 +149,14 @@ To add more inboxes later: account switcher → **+ Add Gmail account** (Owner o
 - **RLS** is enabled on every table with no policies: the browser and the public API keys can read nothing. All data goes through the server.
 - **Tests** fail if any query on an inbox's tables lacks an `account_id` filter, or if a project query bypasses the visible-projects list.
 - **Audit log:** every Approve, Decline, edit, redraft, link and admin change is recorded with who did it (Settings → Activity, and per email on the review screen).
+
+### AI agent and quote requests
+
+- **Setup:** on a database that already exists, run `supabase/migrations/004_ai_agent.sql` once in Supabase → SQL Editor. It only adds two tables. Until it's run, the AI agent tab shows the email drafts as before and explains the step; drafting is unchanged.
+- **Gathering info:** drafting a reply is one Claude call that also reads the thread for a quote request: the checklist answers, the items, and facts for delivery planning (event date, home or venue, start time, requests like a Saturday or same-night pickup). Answers are merged into the thread's quote request and never erased. The reply asks only for required items still missing, and never mentions delivery or pickup dates.
+- **Gates:** "Ready to put quote together" and "Ready to send quote" need someone with send rights (Owner or Approver). In this first version the dashboard doesn't touch Goodshuffle: after the first approval someone builds the project in Goodshuffle and pastes its link; after the second they press Send To Client in Goodshuffle and mark it here. Only `pro.goodshuffle.com` links are accepted.
+- **Delivery days** come from `lib/quote-rules.ts` (Leo's rules, Nov 18, with tests): weekend at a home drops Thu/Fri and picks up Mon/Tue; weekend at a venue drops that morning and picks up the next morning; Friday drops Wed/Thu; midweek is day before and day after; Thanksgiving drops Tue/Wed and picks up Fri/Sat. Venue prices, Saturday pickups and same-night pickups are flagged for Leo.
+- **Commands** are logged in `agent_commands` with who typed them. A command can create or revise an email draft, or propose a change to a quote request, which waits for Approve. It can't send or change anything by itself.
 
 ### Drafts, versions and sending
 

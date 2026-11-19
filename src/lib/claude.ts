@@ -6,6 +6,7 @@ import { db, must } from "./db";
 import { env } from "./env";
 import { visibleProjectIds } from "./accounts";
 import { newDraftVersion } from "./drafts";
+import { agentTablesReady, getChecklist, intakePrompt, quoteForThread, recordIntake } from "./quotes";
 
 // Reads ANTHROPIC_API_KEY. One retry: drafting runs inside a time-limited Vercel function, so a slow
 // call must not use up the whole run (the SDK's default is a 10 minute timeout with 2 retries).
@@ -42,6 +43,27 @@ const DraftSchema = z.object({
   suggested_project_number: z.string().nullable().describe("project_number of the best-matching existing project, or null"),
   suggestion_reason: z.string().describe("One short sentence explaining the project suggestion, or empty if none."),
 });
+
+/** What Claude reads out of a quote request while drafting (see intakePrompt in lib/quotes.ts). */
+const QuoteSchema = z.object({
+  is_quote_request: z.boolean(),
+  title: z.string(),
+  answers: z.array(z.object({ key: z.string(), value: z.string() })),
+  items: z.array(z.object({ name: z.string(), quantity: z.number().nullable(), note: z.string().nullable() })),
+  facts: z.object({
+    event_date: z.string().nullable(),
+    venue_type: z.enum(["home", "venue"]).nullable(),
+    event_start: z.string().nullable(),
+    same_day_dropoff: z.boolean(),
+    same_night_pickup: z.boolean(),
+    saturday_pickup: z.boolean(),
+    exact_time: z.boolean(),
+    stage_or_dance_floor: z.boolean(),
+    north_jersey: z.boolean().nullable(),
+  }),
+  notes_for_team: z.string(),
+});
+const DraftWithQuoteSchema = DraftSchema.extend({ quote: QuoteSchema });
 
 const ReviseSchema = z.object({
   reply: z.string().describe("The complete revised reply, including Leonel's sign-off."),
@@ -149,12 +171,13 @@ async function replyRules(): Promise<string> {
     : "";
 }
 
-async function ask<T extends z.ZodType>(
+export async function ask<T extends z.ZodType>(
   schema: T,
   messages: Anthropic.Beta.BetaMessageParam[],
   deadline?: number,
+  systemPrompt?: string,
 ): Promise<z.infer<T>> {
-  const system = SYSTEM + (await replyRules());
+  const system = systemPrompt ?? SYSTEM + (await replyRules());
   const timeout = deadline ? Math.max(30_000, Math.min(CALL_TIMEOUT_MS, deadline - Date.now())) : CALL_TIMEOUT_MS;
   const res = await client.beta.messages.parse({
     model: env.anthropicModel(),
@@ -178,8 +201,13 @@ async function ask<T extends z.ZodType>(
   return res.parsed_output as z.infer<T>;
 }
 
-/** Create a pending draft for an inbound email of `accountId`. Never sends anything. */
-export async function generateDraft(accountId: string, emailId: string, deadline?: number) {
+/**
+ * Create a pending draft for an inbound email of `accountId`. Never sends anything.
+ * Once the AI agent tables exist (migration 004), the same call also reads quote requests: it fills the
+ * thread's quote request and asks the customer for whatever on the checklist is still missing.
+ * `instruction` is an extra request from the team (the command box).
+ */
+export async function generateDraft(accountId: string, emailId: string, deadline?: number, instruction?: string) {
   // Another run may have drafted it meanwhile; don't ask Claude twice for the same email.
   const open = await db()
     .from("drafts")
@@ -190,17 +218,18 @@ export async function generateDraft(accountId: string, emailId: string, deadline
     .limit(1);
   if (open.data?.length) return;
   try {
-    const { context, projects } = await buildContext(emailId, accountId);
-    const out = await ask(
-      DraftSchema,
-      [
-        {
-          role: "user",
-          content: `${context}\n\nDraft Leonel's reply to the latest client email in <current_thread>.`,
-        },
-      ],
-      deadline,
-    );
+    const { context, projects, email } = await buildContext(emailId, accountId);
+    const agent = await agentTablesReady(accountId).catch(() => false);
+    const checklist = agent ? await getChecklist() : [];
+    const quote = agent ? await quoteForThread(accountId, email.gmail_thread_id) : null;
+    const content =
+      `${context}\n\n` +
+      (agent ? `${intakePrompt(checklist, quote)}\n\n` : "") +
+      (instruction ? `The team asked for this reply: ${instruction}\n\n` : "") +
+      `Draft Leonel's reply to the latest client email in <current_thread>.`;
+    const out = agent
+      ? await ask(DraftWithQuoteSchema, [{ role: "user", content }], deadline)
+      : { ...(await ask(DraftSchema, [{ role: "user", content }], deadline)), quote: null };
     const num = out.suggested_project_number?.replace(/^#/, "").trim();
     const suggested = num ? projects.find((p) => p.project_number === num) : undefined;
     const ins = await db().from("drafts").insert({
@@ -214,6 +243,10 @@ export async function generateDraft(accountId: string, emailId: string, deadline
       suggestion_reason: suggested ? out.suggestion_reason : null,
     });
     if (ins.error && ins.error.code !== "23505") throw new Error(ins.error.message); // 23505 = already has an open draft
+    if (agent) {
+      // A failure here must not lose the draft: it's logged and the next email on the thread tries again.
+      await recordIntake(accountId, email, out.quote, checklist).catch((e) => console.error("recordIntake failed", emailId, e));
+    }
   } catch (e) {
     console.error("generateDraft failed", emailId, e);
     // Record the failure so it shows in the Review Queue with a Retry button.

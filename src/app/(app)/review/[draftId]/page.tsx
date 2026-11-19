@@ -79,7 +79,7 @@ export default async function ReviewPage({ params }: PageProps<"/review/[draftId
     <div className="mx-auto max-w-7xl">
       <MarkReadOnOpen emailId={email.id} isRead={email.is_read} />
       <div className="mb-4 flex flex-wrap items-center gap-2 text-sm">
-        <Link href="/" className="text-stone-500 hover:text-stone-800">← Queue</Link>
+        <Link href="/" className="text-stone-500 hover:text-stone-800">← AI agent</Link>
         <span className="text-stone-300">/</span>
         <span className="font-medium">{email.subject || "(no subject)"}</span>
       </div>

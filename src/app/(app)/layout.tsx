@@ -5,6 +5,7 @@ import { ROLE_LABEL } from "@/lib/permissions";
 import NavLinks from "@/components/NavLinks";
 import NotificationPoller from "@/components/NotificationPoller";
 import AccountSwitcher from "@/components/AccountSwitcher";
+import { agentWaitingCount } from "@/lib/quotes";
 
 export default async function AppLayout({ children }: LayoutProps<"/">) {
   let member;
@@ -17,19 +18,20 @@ export default async function AppLayout({ children }: LayoutProps<"/">) {
   const current = await getCurrentAccount(accounts);
   const counts = await accountCounts(accounts);
   const queueCount = current ? counts[current.id]?.drafts ?? 0 : 0;
+  const agentCount = queueCount + (current ? await agentWaitingCount(current.id) : 0);
 
   return (
     <div className="flex min-h-screen flex-col md:flex-row">
-      <aside className="sticky top-0 z-20 border-b border-stone-200 bg-white md:h-screen md:w-56 md:shrink-0 md:border-r md:border-b-0">
+      <aside className="sticky top-0 z-20 border-b border-stone-200 bg-white md:flex md:h-screen md:w-56 md:shrink-0 md:flex-col md:border-r md:border-b-0">
         <div className="flex items-center gap-2 px-4 py-3 md:py-5">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-xs font-bold text-white">ERG</div>
           <div className="leading-tight">
             <div className="text-sm font-semibold">Event Rental Guys</div>
-            <div className="text-xs text-stone-500">Client comms</div>
+            <div className="text-xs text-stone-500">Team dashboard</div>
           </div>
         </div>
-        <NavLinks queueCount={queueCount} />
-        <div className="hidden px-4 pt-6 text-xs text-stone-400 md:block">
+        <NavLinks agentCount={agentCount} />
+        <div className="hidden px-4 pt-3 pb-5 text-xs text-stone-400 md:block">
           <div className="truncate font-medium text-stone-600">{memberLabel(member)}</div>
           <div className="truncate">{member.email}</div>
           {current && <div className="mt-0.5">{ROLE_LABEL[current.role]} on this account</div>}
