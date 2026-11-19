@@ -235,6 +235,19 @@ export function GoodshuffleLinkEditor({ id, url }: { id: string; url: string | n
   );
 }
 
+/** A possible Goodshuffle match on a card: save its link once someone has checked it's the right project. */
+export function UseGoodshuffleLinkButton({ id, url }: { id: string; url: string }) {
+  const { pending, error, act } = useAct();
+  return (
+    <>
+      <button className="btn-secondary px-2 py-1 text-xs" disabled={pending} onClick={() => act(() => setGoodshuffleLinkAction(id, url))}>
+        It&apos;s the right one, use this link
+      </button>
+      <Err e={error} />
+    </>
+  );
+}
+
 /** Approve or decline a change that a command proposed. */
 export function ChangeActions({ commandId, canEdit, canApprove }: { commandId: string; canEdit: boolean; canApprove: boolean }) {
   const { pending, error, act } = useAct();

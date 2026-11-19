@@ -3,6 +3,7 @@ import { db, must } from "./db";
 import { env } from "./env";
 import { generateDrafts } from "./claude";
 import { isWishListNoticeSubject, WISH_LIST_SUBJECT_ILIKE } from "./email-parse";
+import { autoLinkQuotes, refreshGoodshuffleLinks } from "./goodshuffle-link";
 
 // Drafting is picked up wherever it left off. A Vercel function stops at its time limit (maxDuration),
 // and before this, an email whose draft hadn't been written by then never got one: only emails stored
@@ -92,12 +93,16 @@ export async function draftMissing(accountId: string, deadline: number, first: s
     console.error("hiding wish list emails failed", accountId, e);
     return new Set<string>();
   });
+  // Goodshuffle project links for quote cards (no Claude calls; never throws).
+  await refreshGoodshuffleLinks(accountId, deadline);
   const ids = [...new Set([...first, ...(await findUndraftedEmails(accountId))])].filter((id) => !hidden.has(id));
   if (!ids.length) return { drafted: 0, waiting: 0 };
   const token = await claimDraftingLease(accountId);
   if (!token) return { drafted: 0, waiting: ids.length }; // another run is drafting this inbox right now
   try {
     const { drafted, left } = await generateDrafts(accountId, ids, deadline);
+    // Drafting may have started new quote requests: link those too.
+    if (drafted) await autoLinkQuotes(accountId).catch((e) => console.error("goodshuffle links failed", accountId, e));
     return { drafted, waiting: left };
   } finally {
     await releaseDraftingLease(accountId, token);

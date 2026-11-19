@@ -35,7 +35,7 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-const ACCOUNT_TABLES = ["emails", "drafts", "clients", "style_examples", "presence", "quote_requests", "agent_commands"];
+const ACCOUNT_TABLES = ["emails", "drafts", "clients", "style_examples", "presence", "quote_requests", "agent_commands", "goodshuffle_wishlists"];
 
 test("every query on an account-owned table is scoped by account_id", () => {
   const src = new URL("../", import.meta.url).pathname;

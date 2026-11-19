@@ -186,6 +186,9 @@ export function isWishListNoticeSubject(subject: string | null | undefined): boo
   return WISH_LIST_SUBJECT.test(s) && !/^(re|fw|fwd|aw)\s*:/i.test(s);
 }
 
+/** The skip reason for those notices (ingest keeps their project links; lib/goodshuffle-link.ts). */
+export const GOODSHUFFLE_WISH_LIST_SKIP = "goodshuffle wish list";
+
 export function isGoodshuffleWishList(msg: GmailMessage): boolean {
   if (!WISH_LIST_SUBJECT.test(header(msg, "Subject"))) return false;
   const senders = [...parseAddressList(header(msg, "From")), ...parseAddressList(header(msg, "Sender"))];
@@ -210,7 +213,7 @@ export type InboundContact =
 export function inboundContact(msg: GmailMessage, myEmail: string): InboundContact {
   const from = parseAddressList(header(msg, "From"))[0];
   if (!from) return { skip: "no sender" };
-  if (isGoodshuffleWishList(msg)) return { skip: "goodshuffle wish list" };
+  if (isGoodshuffleWishList(msg)) return { skip: GOODSHUFFLE_WISH_LIST_SKIP };
   const labels = msg.labelIds ?? [];
   if (labels.some((l) => MARKETING_LABELS.includes(l))) return { skip: "bulk/automated" };
 

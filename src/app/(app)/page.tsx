@@ -14,7 +14,9 @@ import CommandBox from "@/components/CommandBox";
 import NoAccount from "@/components/NoAccount";
 import AccountHealth from "@/components/AccountHealth";
 import SyncButton from "@/components/SyncButton";
-import { ChangeActions, GoodshuffleLinkEditor, QuoteEditor, QuoteStageActions, StartQuoteButton } from "@/components/QuoteActions";
+import { ChangeActions, GoodshuffleLinkEditor, QuoteEditor, QuoteStageActions, StartQuoteButton, UseGoodshuffleLinkButton } from "@/components/QuoteActions";
+import { loadWishlists, personForClient, personForQuote, wishlistTableReady } from "@/lib/goodshuffle-link";
+import { matchWishlist, type GoodshuffleMatch } from "@/lib/goodshuffle";
 
 export const dynamic = "force-dynamic";
 // The command box and Redraft call Claude; give them the full 5 minutes.
@@ -65,7 +67,7 @@ export default async function AgentPage({ searchParams }: PageProps<"/">) {
   const canApprove = can(acct.role, "approve");
   const ready = await agentTablesReady(acct.id);
 
-  const [draftsRes, quotesRes, commandsRes, checklist] = await Promise.all([
+  const [draftsRes, quotesRes, commandsRes, checklist, wishlists, gspReady] = await Promise.all([
     db()
       .from("drafts")
       .select("*, emails!drafts_email_fk!inner(*, clients!emails_client_fk(*))")
@@ -80,6 +82,8 @@ export default async function AgentPage({ searchParams }: PageProps<"/">) {
       ? db().from("agent_commands").select("*").eq("account_id", acct.id).order("created_at", { ascending: false }).limit(30)
       : Promise.resolve({ data: [], error: null }),
     getChecklist(),
+    loadWishlists(acct.id),
+    wishlistTableReady(acct.id),
   ]);
   const drafts = must(draftsRes) as unknown as DraftRow[];
   const quotes = (must(quotesRes) ?? []) as QuoteRequest[];
@@ -90,7 +94,7 @@ export default async function AgentPage({ searchParams }: PageProps<"/">) {
   const clientIds = [...new Set(quotes.map((q) => q.client_id).filter(Boolean))] as string[];
   const clients = new Map(
     (clientIds.length
-      ? (must(await db().from("clients").select("id,name,email").eq("account_id", acct.id).in("id", clientIds)) as Pick<Client, "id" | "name" | "email">[])
+      ? (must(await db().from("clients").select("id,name,email,phone").eq("account_id", acct.id).in("id", clientIds)) as QuoteClient[])
       : []
     ).map((c) => [c.id, c]),
   );
@@ -109,8 +113,18 @@ export default async function AgentPage({ searchParams }: PageProps<"/">) {
   };
   const recent = commands.filter((c) => c.status !== "needs_approval").slice(0, 8);
 
+  // Goodshuffle projects, matched from Goodshuffle's wishlist emails (lib/goodshuffle.ts). No Claude calls.
+  const gspFor = (q: QuoteRequest) => matchWishlist(personForQuote(q, q.client_id ? clients.get(q.client_id) : null), wishlists, q.created_at);
   const quoteCard = (q: QuoteRequest) => (
-    <QuoteCard key={q.id} q={q} checklist={checklist} client={q.client_id ? clients.get(q.client_id) : undefined} canEdit={canEdit} canApprove={canApprove} />
+    <QuoteCard
+      key={q.id}
+      q={q}
+      checklist={checklist}
+      client={q.client_id ? clients.get(q.client_id) : undefined}
+      gspMatch={gspFor(q)}
+      canEdit={canEdit}
+      canApprove={canApprove}
+    />
   );
 
   return (
@@ -131,6 +145,13 @@ export default async function AgentPage({ searchParams }: PageProps<"/">) {
         <div className="card border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
           <b>One setup step turns on quote requests and the command box.</b> Run <code>supabase/migrations/004_ai_agent.sql</code> in Supabase → SQL Editor. It only
           adds two new tables. Until then, email drafts below work exactly as before.
+        </div>
+      )}
+
+      {ready && !gspReady && member.is_owner && (
+        <div className="card border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <b>One setup step turns on automatic Goodshuffle links.</b> Run <code>supabase/migrations/005_goodshuffle_wishlists.sql</code> in Supabase → SQL Editor. It only adds
+          one table. Until then, paste project links by hand as before.
         </div>
       )}
 
@@ -218,6 +239,15 @@ export default async function AgentPage({ searchParams }: PageProps<"/">) {
             const to = e.from_address ?? c?.email ?? "";
             const q = byThread.get(e.gmail_thread_id);
             const missing = q ? missingFor(q, checklist) : [];
+            const gsp: { url: string; label: string; title?: string } | null = q?.goodshuffle_url
+              ? { url: q.goodshuffle_url, label: "Open in Goodshuffle ↗" }
+              : (() => {
+                  const m = q ? gspFor(q) : matchWishlist(personForClient(c), wishlists, e.sent_at);
+                  if (!m) return null;
+                  return m.level === "linked"
+                    ? { url: m.wishlist.url, label: "Open in Goodshuffle ↗", title: `Matched: ${m.why}` }
+                    : { url: m.wishlist.url, label: "Goodshuffle: possible match ↗", title: `Check it's the right project: ${m.why}` };
+                })();
             return (
               <div key={r.id} className={`card overflow-hidden ${!e.is_read && r.status === "pending" ? "ring-2 ring-brand-100" : ""}`}>
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-stone-100 px-4 py-2.5">
@@ -236,6 +266,17 @@ export default async function AgentPage({ searchParams }: PageProps<"/">) {
                   )}
                   {r.status === "sending" && <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">sending…</span>}
                   <span className="ml-auto text-xs text-stone-400">received {timeAgo(e.sent_at)}</span>
+                  {gsp && (
+                    <a
+                      href={gsp.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={gsp.title}
+                      className="rounded-lg border border-stone-200 px-2 py-1 text-xs font-medium text-stone-700 hover:bg-stone-50"
+                    >
+                      {gsp.label}
+                    </a>
+                  )}
                 </div>
                 <div className="grid md:grid-cols-2">
                   <div className="border-stone-100 p-4 md:border-r">
@@ -296,16 +337,20 @@ function CardHead({ kind, title, sub, gsp, badge }: { kind: string; title: strin
   );
 }
 
+type QuoteClient = Pick<Client, "id" | "name" | "email" | "phone">;
+
 function QuoteCard({
   q,
   checklist,
   client,
+  gspMatch,
   canEdit,
   canApprove,
 }: {
   q: QuoteRequest;
   checklist: ChecklistItem[];
-  client?: Pick<Client, "id" | "name" | "email">;
+  client?: QuoteClient;
+  gspMatch: GoodshuffleMatch | null;
   canEdit: boolean;
   canApprove: boolean;
 }) {
@@ -327,6 +372,19 @@ function QuoteCard({
         gsp={q.goodshuffle_url}
       />
       {step[q.stage] && <p className="border-b border-stone-100 bg-sky-50/50 px-4 py-2 text-sm text-sky-900">{step[q.stage]}</p>}
+      {!q.goodshuffle_url && gspMatch && q.stage !== "closed" && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-stone-100 bg-amber-50/60 px-4 py-2 text-sm text-amber-900">
+          <span>
+            {gspMatch.level === "linked" ? "Goodshuffle project found" : "Possible Goodshuffle project"}
+            {gspMatch.wishlist.project_name ? <>: <b>{gspMatch.wishlist.project_name}</b></> : null} ({gspMatch.why}).
+            {gspMatch.level === "possible" ? " Check it's the right one." : ""}
+          </span>
+          <a href={gspMatch.wishlist.url} target="_blank" rel="noopener noreferrer" className="font-medium underline">
+            Open it ↗
+          </a>
+          {canEdit && <UseGoodshuffleLinkButton id={q.id} url={gspMatch.wishlist.url} />}
+        </div>
+      )}
       <div className="grid gap-0 md:grid-cols-2">
         <div className="space-y-3 border-stone-100 p-4 md:border-r">
           <div>
@@ -399,6 +457,7 @@ function QuoteCard({
           )}
           <p className="text-xs text-stone-400">
             Goodshuffle project: {q.goodshuffle_url ? <a className="underline" href={q.goodshuffle_url} target="_blank" rel="noopener noreferrer">open</a> : "not linked yet"}
+            {q.goodshuffle_url && gspMatch?.level === "linked" && gspMatch.wishlist.url === q.goodshuffle_url ? ` (matched from the wishlist: ${gspMatch.why})` : ""}
             {canEdit && q.stage !== "closed" && (
               <>
                 {" · "}
