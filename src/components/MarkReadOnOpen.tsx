@@ -3,7 +3,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { setEmailReadAction } from "@/app/actions";
 
-/** Opening an email in the Review view marks it read in Supabase (never in Gmail). */
+/** Opening an email in the Review view marks it read in the dashboard and in Gmail. */
 export default function MarkReadOnOpen({ emailId, isRead }: { emailId: string; isRead: boolean }) {
   const router = useRouter();
   useEffect(() => {

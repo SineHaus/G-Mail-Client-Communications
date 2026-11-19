@@ -2,14 +2,28 @@ import "server-only";
 import { db, must } from "./db";
 import { env } from "./env";
 import type { GmailMessage } from "./email-parse";
-import { assertAllowedGmailCall, GMAIL_SCOPES, grantedScopesAreSafe, isGmailRateLimit, LOGIN_SCOPES, loginScopesAreSafe } from "./gmail-policy";
+import {
+  assertAllowedGmailBody,
+  assertAllowedGmailCall,
+  GMAIL_SCOPES,
+  grantedCanModify,
+  grantedScopesAreSafe,
+  isGmailRateLimit,
+  isGmailScopeError,
+  LOGIN_SCOPES,
+  loginScopesAreSafe,
+  MARK_READ_BATCH_SIZE,
+  markReadRequest,
+  markUnreadRequest,
+} from "./gmail-policy";
 import { decryptToken, encryptToken } from "./token-crypto";
 
 export const redirectUri = () => `${env.appUrl()}/api/auth/callback`;
 
 /**
  * purpose "login": identity only (openid email) — signing in gives the app no mailbox access.
- * purpose "connect": gmail.readonly + gmail.send only — no modify, no full mail access.
+ * purpose "connect": GMAIL_SCOPES (read, send, and label changes, which the allowlist in gmail-policy.ts
+ * limits to the read/unread label). No full mail access.
  */
 export function googleAuthUrl(state: string, purpose: "login" | "connect", loginHint?: string): string {
   const p = new URLSearchParams({
@@ -71,11 +85,22 @@ export class GmailRateLimitError extends Error {
   }
 }
 
+/** Gmail refused a call because this mailbox's saved sign-in lacks a scope (it must reconnect). */
+export class GmailScopeError extends Error {
+  status = 403;
+  constructor(path: string) {
+    super(`This inbox's Google sign-in doesn't allow that yet. Reconnect it in Settings. (Gmail API 403 on ${path.split("?")[0]})`);
+  }
+}
+
 async function gmailFetch<T>(accessToken: string, path: string, init?: RequestInit): Promise<T> {
-  // Hard guard: refuse anything that isn't on the read-only + send allowlist (see gmail-policy.ts).
+  // Hard guard: refuse anything that isn't on the allowlist (see gmail-policy.ts), and check what
+  // a label change would do: only the UNREAD label may be added or removed.
   const method = init?.method ?? "GET";
   assertAllowedGmailCall(method, path);
-  // Reads and the push watch are retried after a rate limit; a send is never retried automatically.
+  assertAllowedGmailBody(method, path, init?.body ?? null);
+  // Reads and the push watch are retried after a rate limit. A send is never retried automatically, and
+  // read/unread isn't either (it's best effort, and the person clicking shouldn't wait a minute).
   const retryable = method === "GET" || path === "watch";
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, {
@@ -96,6 +121,7 @@ async function gmailFetch<T>(accessToken: string, path: string, init?: RequestIn
       }
       throw new GmailRateLimitError(res.status, path);
     }
+    if (isGmailScopeError(res.status, body)) throw new GmailScopeError(path);
     const err = new Error(`Gmail API ${res.status} on ${path}: ${body}`) as Error & { status: number };
     err.status = res.status;
     throw err;
@@ -120,7 +146,12 @@ export async function exchangeCode(code: string) {
   const tokens = await tokenRequest({ code, grant_type: "authorization_code", redirect_uri: redirectUri() });
   // Identify the account with the read-only Gmail profile call (no openid/email/profile scopes needed).
   const profile = await gmailFetch<{ emailAddress: string }>(tokens.access_token, "profile");
-  return { tokens, email: profile.emailAddress.toLowerCase(), scopesOk: grantedScopesAreSafe(tokens.scope) };
+  return {
+    tokens,
+    email: profile.emailAddress.toLowerCase(),
+    scopesOk: grantedScopesAreSafe(tokens.scope),
+    canModify: grantedCanModify(tokens.scope),
+  };
 }
 
 // ---------- Accounts ----------
@@ -280,6 +311,20 @@ export function gmailFor(accountId: string) {
         method: "POST",
         body: JSON.stringify({ raw, threadId }),
       }),
+
+    /** Mark these messages read in Gmail (removes UNREAD only). Up to 1000 ids per request. */
+    markRead: async (gmailMessageIds: string[]) => {
+      for (let i = 0; i < gmailMessageIds.length; i += MARK_READ_BATCH_SIZE) {
+        const req = markReadRequest(gmailMessageIds.slice(i, i + MARK_READ_BATCH_SIZE));
+        await gmail<Record<string, never>>(req.path, { method: "POST", body: JSON.stringify(req.body) });
+      }
+    },
+
+    /** Mark one message unread in Gmail (adds UNREAD only). */
+    markUnread: async (gmailMessageId: string) => {
+      const req = markUnreadRequest(gmailMessageId);
+      await gmail<unknown>(req.path, { method: "POST", body: JSON.stringify(req.body) });
+    },
 
     /** Push notifications. labelIds here only filters which changes notify us; it changes no labels. */
     watch: (topicName: string) =>

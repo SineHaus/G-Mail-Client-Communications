@@ -3,7 +3,7 @@ import { useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { setEmailReadAction } from "@/app/actions";
 
-/** Unread dot + "Mark read/unread". Updates Supabase only; Gmail is untouched. */
+/** Unread dot + "Mark read/unread". Updates the dashboard, then the same email in Gmail (and so in Spark). */
 export default function ReadToggle({ emailId, isRead }: { emailId: string; isRead: boolean }) {
   const router = useRouter();
   const [pending, start] = useTransition();

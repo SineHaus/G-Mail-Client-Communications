@@ -5,6 +5,7 @@ import { buildReplyRaw, header, parseAddressList } from "./email-parse";
 import { ingestMessage } from "./ingest";
 import { newDraftVersion } from "./drafts";
 import { audit } from "./audit";
+import { markEmailRead } from "./read-sync";
 
 /**
  * Approve: send EXACTLY the version shown on screen through Gmail (users.messages.send), from the
@@ -77,7 +78,7 @@ export async function approveDraft(actor: string, accountId: string, shownDraftI
       .update({ status: "sent", sent_gmail_message_id: sent.id, updated_at: new Date().toISOString() })
       .eq("account_id", accountId)
       .eq("id", draftId);
-    await db().from("emails").update({ is_read: true }).eq("account_id", accountId).eq("id", email.id); // dashboard-only
+    await markEmailRead(accountId, email.id).catch((e) => console.error("Sent OK but couldn't mark the email read", e));
     await audit(actor, "approved_and_sent", { accountId, draftId, emailId: email.id, detail: `to ${replyTo.email}` });
 
     try {
