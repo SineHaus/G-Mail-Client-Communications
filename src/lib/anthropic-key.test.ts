@@ -17,6 +17,11 @@ test("describeRefusedKey never shows the key, only its last 4 characters", () =>
   assert.match(msg, /ending in WXYZ/);
   assert.ok(!msg.includes("abcdefgh"));
   assert.match(describeRefusedKey(""), /No ANTHROPIC_API_KEY is set/);
-  assert.match(describeRefusedKey("sk-ant-admin01-xxxxxxxxxxxx"), /Admin key/);
-  assert.match(describeRefusedKey("abc123456789xyz"), /doesn't start with sk-ant-/);
+  assert.match(describeRefusedKey("sk-ant-admin01-xxxxxxxxxxxx"), /sk-ant-admin, not sk-ant-api03-/);
+  assert.match(describeRefusedKey("abc123456789xyz"), /doesn't start with sk-ant-api03-/);
+  assert.match(describeRefusedKey("sk-ant-usr-" + "y".repeat(90) + "AA"), /sk-ant-usr, not sk-ant-api03-/);
+  const full = "sk-ant-api03-" + "x".repeat(93) + "AA";
+  assert.equal(full.length, 108);
+  assert.doesNotMatch(describeRefusedKey(full), /part of it is missing/);
+  assert.match(describeRefusedKey(full.slice(0, 50) + full.slice(52)), /106 characters\).*part of it is missing/);
 });
