@@ -142,7 +142,7 @@ export default function DraftEditor({
                       start(async () => {
                         const r = await regenerateDraftAction(draft.id);
                         if (!r.ok) setError(r.error);
-                        else router.push("/");
+                        else router.push("/inbox");
                       });
                     }}
                   >
