@@ -10,6 +10,7 @@ import {
   mergeInfo,
   missingItems,
   parseChecklist,
+  answerFor,
   textToItems,
   itemsToText,
 } from "./quote-rules.ts";
@@ -29,6 +30,35 @@ test("missing items skip optional ones and treat 'unknown' as missing", () => {
   const c = parseChecklist("Name\nEvent date\nTax-exempt form (optional)");
   assert.deepEqual(missingItems(c, { name: "Ana", event_date: "unknown" }).map((i) => i.key), ["event_date"]);
   assert.deepEqual(missingItems(c, { name: "Ana", event_date: "June 6" }), []);
+});
+
+test("checklist: Leo's list, with items that only count for a tent, dance floor, stage or venue", () => {
+  const c = parseChecklist("");
+  const keys = c.map((i) => i.key);
+  for (const k of ["name", "email", "phone", "event_date", "event_type", "event_address", "items_and_quantities", "delivery_or_warehouse_pickup"]) assert.ok(keys.includes(k), k);
+  assert.equal(c.find((i) => i.key === "guest_count")?.optional, true);
+  assert.deepEqual(c.find((i) => i.key === "tent_size_and_whether_it_needs_heat")?.when, ["tent"]);
+  const base = {
+    name: "Ana", email: "a@x.com", phone: "555", event_date: "June 6", event_type: "Birthday", start_and_end_times: "2-6pm",
+    home_or_venue: "home", event_address: "1 Main St", delivery_or_warehouse_pickup: "delivery",
+  };
+  // Chairs at home: nothing conditional is needed.
+  assert.deepEqual(missingItems(c, { ...base, items_and_quantities: "60 chairs, 6 tables" }).map((i) => i.key), []);
+  // A tent and a dance floor bring their own questions.
+  assert.deepEqual(
+    missingItems(c, { ...base, items_and_quantities: "1 20x40 tent, dance floor" }).map((i) => i.key),
+    ["tent_size_and_whether_it_needs_heat", "dance_floor_size_and_color_and_whether_it_s_on_grass"],
+  );
+  // At a venue the venue's name is needed too.
+  assert.deepEqual(missingItems(c, { ...base, home_or_venue: "venue", items_and_quantities: "60 chairs" }).map((i) => i.key), ["venue_name"]);
+  // "tents" counts as tent; "stagecoach" doesn't count as stage.
+  assert.equal(missingItems(c, { ...base, items_and_quantities: "2 tents, stagecoach theme" }).length, 1);
+});
+
+test("a quote started before the checklist changed keeps its venue address", () => {
+  const c = parseChecklist("Event address");
+  assert.deepEqual(missingItems(c, { venue_address: "9 Elm St" }), []);
+  assert.equal(answerFor({ venue_address: "9 Elm St" }, "event_address"), "9 Elm St");
 });
 
 test("merging answers never erases an earlier one", () => {

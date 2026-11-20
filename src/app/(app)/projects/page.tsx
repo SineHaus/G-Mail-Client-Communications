@@ -75,7 +75,7 @@ export default async function ProjectsPage({ searchParams }: PageProps<"/project
           <Link
             key={s}
             href={`/projects${s === "all" ? "" : `?status=${s}`}${q ? `${s === "all" ? "?" : "&"}q=${encodeURIComponent(q)}` : ""}`}
-            className={`rounded-full px-3 py-1 text-xs font-medium capitalize ${s === status ? "bg-stone-900 text-white" : "bg-white text-stone-600 ring-1 ring-stone-200 hover:bg-stone-50"}`}
+            className={`rounded-full px-3 py-1 text-xs font-medium capitalize ${s === status ? "bg-[var(--ink)] text-white" : "bg-white text-stone-600 ring-1 ring-stone-200 hover:bg-stone-50"}`}
           >
             {s}
           </Link>

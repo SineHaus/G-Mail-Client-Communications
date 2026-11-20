@@ -113,6 +113,7 @@ create table if not exists emails (
   snippet            text,
   sent_at            timestamptz not null,
   is_read            boolean not null default false, -- the dashboard's copy; changes are copied to Gmail's UNREAD label (lib/read-sync.ts)
+  attachments        jsonb not null default '[]'::jsonb, -- [{part, name, type, size}]; files open from Gmail
   created_at         timestamptz not null default now(),
   constraint emails_account_message_key unique (account_id, gmail_message_id),
   constraint emails_account_id_id_key unique (account_id, id),
@@ -282,6 +283,29 @@ create table if not exists goodshuffle_wishlists (
 );
 create index if not exists goodshuffle_wishlists_account_idx on goodshuffle_wishlists(account_id, received_at desc);
 
+-- Goodshuffle project details (same as supabase/migrations/006_threads_and_projects.sql)
+create table if not exists goodshuffle_projects (
+  id               uuid primary key default gen_random_uuid(),
+  account_id       uuid not null references gmail_accounts(id) on delete cascade,
+  gsp_project_id   text not null,
+  url              text not null,
+  project_name     text,
+  client_name      text,
+  client_email     text,
+  venue            text,
+  status           text,
+  event_date       date,
+  logistics_start  timestamptz,
+  logistics_end    timestamptz,
+  quote_total      numeric(12,2),
+  amount_due       numeric(12,2),
+  billing_status   text,
+  synced_at        timestamptz not null default now(),
+  created_at       timestamptz not null default now(),
+  constraint goodshuffle_projects_account_project_key unique (account_id, gsp_project_id)
+);
+create index if not exists goodshuffle_projects_account_idx on goodshuffle_projects(account_id, event_date);
+alter table emails add column if not exists attachments jsonb not null default '[]'::jsonb;
 
 -- New draft version in one step: closes the open version and opens the next. Refuses if the given
 -- version is no longer the open one (someone else changed it first).
@@ -315,6 +339,64 @@ returns table (id uuid) language sql stable as $$
    where p.client_id is null and not exists (select 1 from emails e where e.project_id = p.id)
 $$;
 
+-- Goodshuffle Pro messages and replies (same as supabase/migrations/007_goodshuffle_messages.sql)
+-- A Chrome that may sync messages and send approved replies. The token is stored only as a SHA-256 hash.
+create table if not exists goodshuffle_devices (
+  id                 uuid primary key default gen_random_uuid(),
+  account_id         uuid not null references gmail_accounts(id) on delete cascade,
+  label              text not null,
+  token_hash         text not null unique,
+  created_by         text not null,
+  created_at         timestamptz not null default now(),
+  last_seen_at       timestamptz,
+  last_signed_in_as  text,          -- the Goodshuffle login the extension last saw
+  revoked_at         timestamptz
+);
+create index if not exists goodshuffle_devices_account_idx on goodshuffle_devices(account_id);
+
+-- Messages as Goodshuffle stores them (Messages → a project's client conversation).
+create table if not exists goodshuffle_messages (
+  id                   uuid primary key default gen_random_uuid(),
+  account_id           uuid not null references gmail_accounts(id) on delete cascade,
+  gsp_message_id       text not null,
+  gsp_project_id       text not null,
+  gsp_conversation_id  text,
+  direction            text not null check (direction in ('inbound','outbound','system')),
+  sender_name          text,
+  sender_email         text,
+  subject              text,
+  body                 text not null default '',
+  sent_at              timestamptz not null,
+  synced_at            timestamptz not null default now(),
+  constraint goodshuffle_messages_account_message_key unique (account_id, gsp_message_id)
+);
+create index if not exists goodshuffle_messages_project_idx on goodshuffle_messages(account_id, gsp_project_id, sent_at desc);
+
+-- Replies to send through Goodshuffle. pending (draft) → approved (a person said yes) → sending (the
+-- extension claimed it) → sent, or failed. A failed or stuck reply is never retried by itself.
+create table if not exists goodshuffle_replies (
+  id                   uuid primary key default gen_random_uuid(),
+  account_id           uuid not null references gmail_accounts(id) on delete cascade,
+  gsp_project_id       text not null,
+  in_reply_to          text,          -- gsp_message_id of the customer message this answers
+  body                 text not null,
+  status               text not null default 'pending'
+                       check (status in ('pending','approved','sending','sent','failed','declined')),
+  created_by           text not null default 'claude',
+  decided_by           text,
+  decided_at           timestamptz,
+  claimed_by           uuid references goodshuffle_devices(id) on delete set null,
+  claimed_at           timestamptz,
+  sent_at              timestamptz,
+  sent_gsp_message_id  text,
+  error                text,
+  created_at           timestamptz not null default now(),
+  updated_at           timestamptz not null default now()
+);
+create index if not exists goodshuffle_replies_account_idx on goodshuffle_replies(account_id, status, created_at desc);
+create unique index if not exists goodshuffle_replies_one_open_per_project
+  on goodshuffle_replies(account_id, gsp_project_id) where status in ('pending','approved','sending','failed');
+
 alter table team_members   enable row level security;
 alter table gmail_accounts enable row level security;
 alter table account_access enable row level security;
@@ -330,6 +412,10 @@ alter table presence       enable row level security;
 alter table quote_requests enable row level security;
 alter table agent_commands enable row level security;
 alter table goodshuffle_wishlists enable row level security;
+alter table goodshuffle_projects enable row level security;
+alter table goodshuffle_devices enable row level security;
+alter table goodshuffle_messages enable row level security;
+alter table goodshuffle_replies enable row level security;
 
 -- Functions are only for the server (service role), not the public API keys.
 revoke execute on function new_draft_version(uuid, text, text, text) from public, anon, authenticated;

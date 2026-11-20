@@ -161,3 +161,31 @@ test("isWishListNoticeSubject: the notice, not replies or forwards", () => {
   assert.equal(isWishListNoticeSubject("New Form Submitted"), false);
   assert.equal(isWishListNoticeSubject(null), false);
 });
+
+test("attachments: named parts with an attachment id, by part id; only pictures and PDFs open inline", async () => {
+  const { listAttachments, findPartById, canShowInline, isPicture } = await import("./email-parse.ts");
+  const msg = {
+    id: "m1",
+    threadId: "t1",
+    payload: {
+      partId: "",
+      mimeType: "multipart/mixed",
+      parts: [
+        { partId: "0", mimeType: "text/plain", body: { data: "aGk", size: 2 } },
+        { partId: "1", mimeType: "IMAGE/JPEG", filename: "tent-site.jpg", body: { attachmentId: "A1", size: 2048 } },
+        { partId: "2", mimeType: "multipart/related", parts: [{ partId: "2.1", mimeType: "application/pdf", filename: "venue map.pdf", body: { attachmentId: "A2", size: 9 } }] },
+        { partId: "3", mimeType: "image/png", filename: "", body: { attachmentId: "A3", size: 1 } },
+      ],
+    },
+  };
+  assert.deepEqual(listAttachments(msg), [
+    { part: "1", name: "tent-site.jpg", type: "image/jpeg", size: 2048 },
+    { part: "2.1", name: "venue map.pdf", type: "application/pdf", size: 9 },
+  ]);
+  assert.equal(findPartById(msg, "2.1")?.filename, "venue map.pdf");
+  assert.equal(findPartById(msg, "9"), null);
+  assert.equal(isPicture("image/jpeg"), true);
+  assert.equal(canShowInline("application/pdf"), true);
+  assert.equal(isPicture("application/pdf"), false);
+  for (const t of ["image/svg+xml", "text/html", "application/javascript", "application/octet-stream"]) assert.equal(canShowInline(t), false, t);
+});

@@ -18,6 +18,7 @@ export default function DraftActions({
   compact,
   canEdit,
   canApprove,
+  onDone,
 }: {
   draftId: string;
   to: string;
@@ -28,6 +29,7 @@ export default function DraftActions({
   compact?: boolean;
   canEdit: boolean;
   canApprove: boolean;
+  onDone?: () => void; // after a send or decline (the thread panel reloads)
 }) {
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
@@ -39,6 +41,7 @@ export default function DraftActions({
       setConfirming(false);
       return setError(r.error ?? "Something went wrong");
     }
+    onDone?.();
     if (afterDone) router.push(afterDone);
     else router.refresh();
   };

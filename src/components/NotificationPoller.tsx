@@ -49,7 +49,7 @@ export default function NotificationPoller({ initialCount }: { initialCount: num
         </button>
       )}
       {toast && (
-        <div className="fixed inset-x-4 bottom-4 z-40 mx-auto flex max-w-md items-center justify-between gap-3 rounded-xl bg-stone-900 px-4 py-3 text-sm text-white shadow-lg">
+        <div className="fixed inset-x-4 bottom-4 z-40 mx-auto flex max-w-md items-center justify-between gap-3 rounded-xl bg-[var(--ink)] px-4 py-3 text-sm text-white shadow-lg">
           {toast}
           <button onClick={() => setToast(null)} className="text-stone-400 hover:text-white">✕</button>
         </div>

@@ -24,6 +24,7 @@ import { CHECKLIST_KEY, getChecklist, missingFor, quoteForThread, type QuoteRequ
 import { ITEMS_KEY, applyItemChange, cleanGoodshuffleUrl, itemsSummary, mergeInfo, textToItems } from "@/lib/quote-rules";
 import { runCommand, type ProposedChange } from "@/lib/agent-commands";
 import { noAutoLinkKey } from "@/lib/goodshuffle-link";
+import { approveReply, createDevice, declineReply, reviseGspReply, revokeDevice, saveReplyText } from "@/lib/goodshuffle-messages";
 
 type Result<T = undefined> = { ok: true; data?: T } | { ok: false; error: string };
 type Ctx = Awaited<ReturnType<typeof requireAccount>>;
@@ -596,6 +597,26 @@ export async function startQuoteAction(emailId: string) {
   return r;
 }
 
+/**
+ * "Ready for Goodshuffle": a thread the team marks as ready to become a Goodshuffle Pro project.
+ * Starts its quote request if it has none and moves it into the approval queue (Ready to put quote
+ * together). Nothing is sent and nothing is made in Goodshuffle; that still waits for Approve.
+ */
+export async function markReadyForGoodshuffleAction(emailId: string) {
+  const started = await startQuoteAction(emailId);
+  if (!started.ok) return started;
+  const id = started.data as string;
+  const r = await run("edit", async (c) => {
+    const q = must(await db().from("quote_requests").select("stage").eq("account_id", c.accountId).eq("id", id).single()) as { stage: string };
+    if (q.stage === "gathering" || q.stage === "closed") {
+      await moveQuote(c, id, ["gathering", "closed"], { stage: "ready_to_build", closed_reason: null }, "quote_request_marked_ready_for_goodshuffle");
+    }
+    return id;
+  });
+  refreshAll();
+  return r;
+}
+
 // ---------- AI agent: command box ----------
 
 export async function runCommandAction(command: string) {
@@ -705,6 +726,44 @@ export async function setOwnerAction(memberId: string, isOwner: boolean) {
     must(await db().from("team_members").update({ is_owner: isOwner }).eq("id", memberId).select("id"));
     await audit(actor, isOwner ? "made_owner" : "removed_owner", { detail: memberId });
   });
+  revalidatePath("/settings");
+  return r;
+}
+
+// ---------- Goodshuffle Pro messages (sent by the Chrome extension, only after Approve) ----------
+
+/** Approve: queues exactly `bodyOnScreen` for the extension to type into Goodshuffle and send. */
+export async function approveGspReplyAction(id: string, bodyOnScreen: string) {
+  const r = await run("approve", (c) => approveReply(c.accountId, id, bodyOnScreen, c.member.email));
+  refreshAll();
+  return r;
+}
+
+export async function declineGspReplyAction(id: string) {
+  const r = await run("edit", (c) => declineReply(c.accountId, id, c.member.email));
+  refreshAll();
+  return r;
+}
+
+export async function saveGspReplyAction(id: string, body: string) {
+  const r = await run("edit", (c) => saveReplyText(c.accountId, id, body, c.member.email));
+  refreshAll();
+  return r;
+}
+
+export async function reviseGspReplyAction(id: string, instruction: string, currentBody: string) {
+  const r = await run("edit", (c) => reviseGspReply(c.accountId, id, instruction, currentBody, c.member.email));
+  refreshAll();
+  return r;
+}
+
+/** A token for the Chrome that runs the extension (shown once). Owner only. */
+export async function createGspDeviceAction(label: string) {
+  return run("manage", (c) => createDevice(c.accountId, label, c.member.email));
+}
+
+export async function revokeGspDeviceAction(deviceId: string) {
+  const r = await run("manage", (c) => revokeDevice(c.accountId, deviceId, c.member.email));
   revalidatePath("/settings");
   return r;
 }
