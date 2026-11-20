@@ -596,6 +596,26 @@ export async function startQuoteAction(emailId: string) {
   return r;
 }
 
+/**
+ * "Ready for Goodshuffle": a thread the team marks as ready to become a Goodshuffle Pro project.
+ * Starts its quote request if it has none and moves it into the approval queue (Ready to put quote
+ * together). Nothing is sent and nothing is made in Goodshuffle; that still waits for Approve.
+ */
+export async function markReadyForGoodshuffleAction(emailId: string) {
+  const started = await startQuoteAction(emailId);
+  if (!started.ok) return started;
+  const id = started.data as string;
+  const r = await run("edit", async (c) => {
+    const q = must(await db().from("quote_requests").select("stage").eq("account_id", c.accountId).eq("id", id).single()) as { stage: string };
+    if (q.stage === "gathering" || q.stage === "closed") {
+      await moveQuote(c, id, ["gathering", "closed"], { stage: "ready_to_build", closed_reason: null }, "quote_request_marked_ready_for_goodshuffle");
+    }
+    return id;
+  });
+  refreshAll();
+  return r;
+}
+
 // ---------- AI agent: command box ----------
 
 export async function runCommandAction(command: string) {

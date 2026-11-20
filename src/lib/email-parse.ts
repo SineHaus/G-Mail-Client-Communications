@@ -2,6 +2,7 @@
 
 export interface GmailHeader { name: string; value: string }
 export interface GmailPart {
+  partId?: string;
   mimeType?: string;
   filename?: string;
   headers?: GmailHeader[];
@@ -232,3 +233,49 @@ export function inboundContact(msg: GmailMessage, myEmail: string): InboundConta
     domainOf(replyTo.email) !== domainOf(me);
   return isCustomer ? { contact: replyTo, viaForm: true } : { skip: "bulk/automated" };
 }
+
+// ---------- Attachments ----------
+
+/** What the dashboard keeps about one attachment (never the file itself; it's fetched from Gmail when opened). */
+export interface AttachmentMeta {
+  part: string; // Gmail's partId, stable for a message (attachment ids are not)
+  name: string;
+  type: string;
+  size: number;
+}
+
+/** Files attached to a message: parts with a filename and an attachment id (inline logos in signatures included). */
+export function listAttachments(msg: GmailMessage): AttachmentMeta[] {
+  const out: AttachmentMeta[] = [];
+  const walk = (p: GmailPart | undefined) => {
+    if (!p) return;
+    if (p.filename && p.body?.attachmentId && p.partId) {
+      out.push({ part: p.partId, name: p.filename, type: (p.mimeType || "application/octet-stream").toLowerCase(), size: p.body.size ?? 0 });
+    }
+    for (const c of p.parts ?? []) walk(c);
+  };
+  walk(msg.payload);
+  return out;
+}
+
+/** The part of a message with this partId. */
+export function findPartById(msg: GmailMessage, partId: string): GmailPart | null {
+  const walk = (p: GmailPart | undefined): GmailPart | null => {
+    if (!p) return null;
+    if (p.partId === partId) return p;
+    for (const c of p.parts ?? []) {
+      const hit = walk(c);
+      if (hit) return hit;
+    }
+    return null;
+  };
+  return walk(msg.payload);
+}
+
+/**
+ * Types the dashboard shows inside its own page (pictures and PDFs). Everything else, SVG and HTML
+ * included, is only ever downloaded, so a file from a customer can't run code on the dashboard.
+ */
+const INLINE_TYPES = new Set(["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/heic", "application/pdf"]);
+export const canShowInline = (type: string) => INLINE_TYPES.has(type.toLowerCase());
+export const isPicture = (type: string) => canShowInline(type) && type.toLowerCase().startsWith("image/");

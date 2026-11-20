@@ -55,6 +55,8 @@ test("allowed calls: read-only fetch/sync/push + messages.send + read/unread", (
     ["GET", "messages/18c2f0a1b2c3d4e5?format=full"],
     ["GET", "messages/18c2f0a1b2c3d4e5?format=metadata&metadataHeaders=Message-ID&metadataHeaders=References"],
     ["GET", "history?startHistoryId=123&historyTypes=messageAdded"],
+    ["GET", "threads/18c2f0a1b2c3d4e5?format=full"],
+    ["GET", "messages/18c2f0a1b2c3d4e5/attachments/ANGjdJ8_a-b1"],
     ["POST", "watch"],
     ["POST", "stop"],
     ["POST", "messages/send"],
@@ -83,6 +85,10 @@ test("blocked: every destructive Gmail call, thread-wide changes and label admin
     ["POST", "messages/../threads/abc/modify"],
     ["GET", "messages/abc?format=full/../modify"],
     ["POST", "settings/filters"],
+    ["GET", "threads/abc?format=full/../modify"],
+    ["GET", "threads?q=anything"],
+    ["POST", "messages/abc/attachments/def"],
+    ["GET", "messages/abc/attachments/../modify"],
   ]) assert.throws(() => assertAllowedGmailCall(m, p), /Blocked Gmail API call/, `${m} ${p}`);
 });
 

@@ -113,6 +113,7 @@ create table if not exists emails (
   snippet            text,
   sent_at            timestamptz not null,
   is_read            boolean not null default false, -- the dashboard's copy; changes are copied to Gmail's UNREAD label (lib/read-sync.ts)
+  attachments        jsonb not null default '[]'::jsonb, -- [{part, name, type, size}]; files open from Gmail
   created_at         timestamptz not null default now(),
   constraint emails_account_message_key unique (account_id, gmail_message_id),
   constraint emails_account_id_id_key unique (account_id, id),
@@ -282,6 +283,29 @@ create table if not exists goodshuffle_wishlists (
 );
 create index if not exists goodshuffle_wishlists_account_idx on goodshuffle_wishlists(account_id, received_at desc);
 
+-- Goodshuffle project details (same as supabase/migrations/006_threads_and_projects.sql)
+create table if not exists goodshuffle_projects (
+  id               uuid primary key default gen_random_uuid(),
+  account_id       uuid not null references gmail_accounts(id) on delete cascade,
+  gsp_project_id   text not null,
+  url              text not null,
+  project_name     text,
+  client_name      text,
+  client_email     text,
+  venue            text,
+  status           text,
+  event_date       date,
+  logistics_start  timestamptz,
+  logistics_end    timestamptz,
+  quote_total      numeric(12,2),
+  amount_due       numeric(12,2),
+  billing_status   text,
+  synced_at        timestamptz not null default now(),
+  created_at       timestamptz not null default now(),
+  constraint goodshuffle_projects_account_project_key unique (account_id, gsp_project_id)
+);
+create index if not exists goodshuffle_projects_account_idx on goodshuffle_projects(account_id, event_date);
+alter table emails add column if not exists attachments jsonb not null default '[]'::jsonb;
 
 -- New draft version in one step: closes the open version and opens the next. Refuses if the given
 -- version is no longer the open one (someone else changed it first).
@@ -330,6 +354,7 @@ alter table presence       enable row level security;
 alter table quote_requests enable row level security;
 alter table agent_commands enable row level security;
 alter table goodshuffle_wishlists enable row level security;
+alter table goodshuffle_projects enable row level security;
 
 -- Functions are only for the server (service role), not the public API keys.
 revoke execute on function new_draft_version(uuid, text, text, text) from public, anon, authenticated;

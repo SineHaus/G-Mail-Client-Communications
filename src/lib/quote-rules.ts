@@ -5,28 +5,36 @@
 // ---------- Required-info checklist ----------
 
 /**
- * Draft checklist from the build plan (Leo still has to confirm it). Editable in Settings →
- * Quote checklist, one item per line. "(optional)" at the end of a line means Claude asks for it
- * but a quote can be built without it.
+ * The quote info checklist (Leo's plan, Nov 2026). Editable in Settings → Quote checklist, one item
+ * per line. "(optional)" at the end of a line means Claude asks for it once but a quote can be built
+ * without it. "(when: tent)" means the item is needed only when the request mentions that word
+ * (a tent, a dance floor, a venue…); "(when: a, b)" accepts any of several words.
  */
 export const DEFAULT_CHECKLIST = `Name
-Phone
 Email
-Event type
+Phone
 Event date
+Event type
 Start and end times
 Home or venue
-Venue address
-Indoor or outdoor, and surface
-Guest count
+Event address
+Venue name (when: venue)
 Items and quantities
-Setup wanted
+Delivery or warehouse pickup
+Tent size, and whether it needs heat (when: tent)
+Dance floor size and color, and whether it's on grass (when: dance floor)
+Stage size and height (when: stage)
+Guest count (optional)
+Setup wanted (optional)
+Indoor or outdoor, and surface (optional)
 Tax-exempt form (optional)`;
 
 export interface ChecklistItem {
   key: string;
   label: string;
   optional: boolean;
+  /** Needed only when the request mentions one of these words. */
+  when?: string[];
 }
 
 export function slug(label: string) {
@@ -37,18 +45,22 @@ export function slug(label: string) {
     .replace(/^_+|_+$/g, "");
 }
 
+const WHEN = /\s*\(when:\s*([^)]*)\)\s*/i;
+
 export function parseChecklist(text: string | null | undefined): ChecklistItem[] {
   const seen = new Set<string>();
   const out: ChecklistItem[] = [];
   for (const raw of (text?.trim() ? text : DEFAULT_CHECKLIST).split("\n")) {
-    const line = raw.replace(/^[-*•\d.)\s]+/, "").trim();
+    let line = raw.replace(/^[-*•\d.)\s]+/, "").trim();
     if (!line) continue;
-    const optional = /\(optional\)\s*$/i.test(line) || /\bif any\b/i.test(line);
-    const label = line.replace(/\s*\(optional\)\s*$/i, "").trim();
-    const key = slug(label);
+    const optional = /\(optional\)/i.test(line) || /\bif any\b/i.test(line);
+    const w = line.match(WHEN);
+    const when = w?.[1].split(/[,/]| or /).map((x) => x.trim().toLowerCase()).filter(Boolean);
+    line = line.replace(WHEN, " ").replace(/\s*\(optional\)\s*/i, " ").trim();
+    const key = slug(line);
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    out.push({ key, label, optional });
+    out.push({ key, label: line, optional, ...(when?.length ? { when } : {}) });
   }
   return out;
 }
@@ -59,9 +71,25 @@ export function hasValue(v: unknown) {
   return typeof v === "string" ? !EMPTY.test(v.trim()) : v != null;
 }
 
-/** Required checklist items with no answer yet (optional ones never block a quote). */
+/** Older checklist keys that answer a newer item (quotes started before the checklist changed). */
+const OLD_KEYS: Record<string, string[]> = { event_address: ["venue_address"] };
+
+/** A quote's answer to a checklist item, including one saved under the item's older name. */
+export function answerFor(info: Record<string, string>, key: string): string {
+  for (const k of [key, ...(OLD_KEYS[key] ?? [])]) if (hasValue(info[k])) return info[k];
+  return "";
+}
+
+/** Whether a "(when: …)" item applies: the request mentions one of its words anywhere in its answers. */
+export function applies(item: ChecklistItem, info: Record<string, string>): boolean {
+  if (!item.when?.length) return true;
+  const text = Object.values(info).join(" \n ").toLowerCase();
+  return item.when.some((w) => new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+")}s?\\b`).test(text));
+}
+
+/** Required checklist items with no answer yet (optional ones and ones that don't apply never block a quote). */
 export function missingItems(checklist: ChecklistItem[], info: Record<string, string>): ChecklistItem[] {
-  return checklist.filter((c) => !c.optional && !hasValue(info[c.key]));
+  return checklist.filter((c) => !c.optional && applies(c, info) && !hasValue(answerFor(info, c.key)));
 }
 
 /** Merge new answers into old ones: a new non-empty answer wins, an empty one never erases. */

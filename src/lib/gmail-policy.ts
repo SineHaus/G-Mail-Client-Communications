@@ -38,6 +38,8 @@ const ALLOWED: readonly [string, RegExp, string][] = [
   ["GET", /^messages\?[^/]*$/, "users.messages.list (read-only)"],
   ["GET", /^messages\/[A-Za-z0-9]+\?format=(full|metadata)(&metadataHeaders=[A-Za-z-]+)*$/, "users.messages.get (read-only)"],
   ["GET", /^history\?[^/]*$/, "users.history.list (read-only)"],
+  ["GET", /^threads\/[A-Za-z0-9]+\?format=full$/, "users.threads.get (read-only): a dashboard thread's earlier emails"],
+  ["GET", /^messages\/[A-Za-z0-9]+\/attachments\/[A-Za-z0-9_-]+$/, "users.messages.attachments.get (read-only): opening an attachment"],
   ["POST", /^watch$/, "users.watch — push notifications only; does not change mail"],
   ["POST", /^stop$/, "users.stop — turns off push notifications when disconnecting; does not change mail"],
   ["POST", /^messages\/send$/, "users.messages.send — Accept button only"],

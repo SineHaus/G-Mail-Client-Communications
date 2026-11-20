@@ -2,7 +2,8 @@ import "server-only";
 import { db, must } from "./db";
 import { env } from "./env";
 import { GmailRateLimitError, gmailFor, getAccount, sleep } from "./google";
-import { GOODSHUFFLE_WISH_LIST_SKIP, extractBody, header, inboundContact, mentionsProjectNumber, parseAddressList, stripQuoted, type GmailMessage } from "./email-parse";
+import { GOODSHUFFLE_WISH_LIST_SKIP, extractBody, header, inboundContact, listAttachments, mentionsProjectNumber, parseAddressList, stripQuoted, type GmailMessage } from "./email-parse";
+import { attachmentsColumnReady } from "./schema-ready";
 import { saveWishlistNotice } from "./goodshuffle-link";
 import { audit } from "./audit";
 
@@ -36,7 +37,12 @@ async function findOrCreateClient(accountId: string, email: string, name: string
 }
 
 /** Store one Gmail message of `accountId` (if it's a client conversation) and match/create the client. */
-export async function ingestMessage(accountId: string, msg: GmailMessage, myEmail: string): Promise<IngestResult> {
+export async function ingestMessage(
+  accountId: string,
+  msg: GmailMessage,
+  myEmail: string,
+  opts: { historical?: boolean } = {},
+): Promise<IngestResult> {
   const found = must(
     await db().from("emails").select("id").eq("account_id", accountId).eq("gmail_message_id", msg.id).limit(1),
   ) as { id: string }[];
@@ -113,7 +119,9 @@ export async function ingestMessage(accountId: string, msg: GmailMessage, myEmai
     snippet: msg.snippet ?? null,
     sent_at: sentAt,
     // Read/unread is tracked only in Supabase. Gmail's UNREAD label is never read from or written to.
-    is_read: direction === "outbound",
+    // Earlier emails pulled in for a thread's full history are history, not new mail.
+    is_read: opts.historical ? true : direction === "outbound",
+    ...((await attachmentsColumnReady()) ? { attachments: listAttachments(msg) } : {}),
   };
   const ins = await db().from("emails").insert({ ...row, account_id: accountId }).select("id").single();
   if (ins.error) {
@@ -139,7 +147,7 @@ export async function ingestMessage(accountId: string, msg: GmailMessage, myEmai
   }
 
   // A reply was sent from this mailbox (in Gmail, or from here) → open drafts for earlier emails are done.
-  if (direction === "outbound") await closeThreadDrafts(accountId, msg.threadId, sentAt);
+  if (direction === "outbound" && !opts.historical) await closeThreadDrafts(accountId, msg.threadId, sentAt);
 
   return { status: "inserted", emailId, direction, threadId: msg.threadId, sentAt };
 }

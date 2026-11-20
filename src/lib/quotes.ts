@@ -166,7 +166,9 @@ export async function recordIntake(
 
 /** The quote request's text for Claude, so the next reply asks only for what's still missing. */
 export function intakePrompt(checklist: ChecklistItem[], q: QuoteRequest | null) {
-  const list = checklist.map((c) => `- ${c.key}: ${c.label}${c.optional ? " (optional, ask once)" : ""}`).join("\n");
+  const list = checklist
+    .map((c) => `- ${c.key}: ${c.label}${c.when?.length ? ` (only when the request includes: ${c.when.join(", ")})` : ""}${c.optional ? " (optional, ask once)" : ""}`)
+    .join("\n");
   const known = q
     ? Object.entries(q.info)
         .map(([k, v]) => `- ${k}: ${v}`)

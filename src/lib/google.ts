@@ -280,6 +280,13 @@ export function gmailFor(accountId: string) {
 
     getMessage: (id: string) => gmail<GmailMessage>(`messages/${id}?format=full`),
 
+    /** Every message in a thread, with bodies (read-only). Used to fill in a dashboard thread's earlier emails. */
+    getThread: (threadId: string) => gmail<{ id: string; messages?: GmailMessage[] }>(`threads/${threadId}?format=full`),
+
+    /** One attachment's file, base64url (read-only). attachmentId comes from a fresh getMessage. */
+    getAttachment: (messageId: string, attachmentId: string) =>
+      gmail<{ data?: string; size?: number }>(`messages/${messageId}/attachments/${attachmentId}`),
+
     getMessageHeaders: (id: string) =>
       gmail<GmailMessage>(
         `messages/${id}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=References&metadataHeaders=Reply-To&metadataHeaders=From&metadataHeaders=Subject`,
