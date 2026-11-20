@@ -1,6 +1,6 @@
 import { getCurrentAccount } from "@/lib/accounts";
 import { requireMember } from "@/lib/team";
-import { loadGoodshuffleProjects, money, shortDate } from "@/lib/dashboard";
+import { GSP_DETAILS_LIVE, loadGoodshuffleProjects, money, shortDate } from "@/lib/dashboard";
 import { GOODSHUFFLE_HOME } from "@/lib/quote-rules";
 import NoAccount from "@/components/NoAccount";
 
@@ -14,7 +14,7 @@ export default async function PaymentsPage() {
   const acct = await getCurrentAccount();
   if (!acct) return <NoAccount isOwner={member.is_owner} />;
 
-  const projects = await loadGoodshuffleProjects(acct.id);
+  const projects = GSP_DETAILS_LIVE ? await loadGoodshuffleProjects(acct.id) : [];
   const owed = projects.filter((p) => (p.amount_due ?? 0) > 0).sort((a, b) => (a.event_date ?? "9999").localeCompare(b.event_date ?? "9999"));
   const total = owed.reduce((n, p) => n + (p.amount_due ?? 0), 0);
   const cols = "minmax(180px,1.3fr) minmax(160px,1fr) 110px 120px 110px 70px";
@@ -31,8 +31,8 @@ export default async function PaymentsPage() {
 
       {projects.length === 0 ? (
         <div className="t-banner">
-          <b>Payments come from Goodshuffle.</b> Goodshuffle has no way for the dashboard to read billing directly, so amounts due show up here once the Goodshuffle
-          project sync is set up. Until then, check billing in Goodshuffle.
+          <b>Coming soon.</b> Amounts due and billing status come from Goodshuffle, and show up here once the Goodshuffle project sync is set up. Until then,
+          check billing in Goodshuffle.
         </div>
       ) : (
         <>

@@ -2,7 +2,7 @@ import Link from "next/link";
 import { getCurrentAccount } from "@/lib/accounts";
 import { requireMember } from "@/lib/team";
 import { STAGE_LABEL, TEAM_STAGES, type Stage } from "@/lib/quotes";
-import { loadGoodshuffleProjects, loadQuotes, money, personName, shortDate, type GoodshuffleProject } from "@/lib/dashboard";
+import { GSP_DETAILS_LIVE, loadGoodshuffleProjects, loadQuotes, money, personName, shortDate, type GoodshuffleProject } from "@/lib/dashboard";
 import { loadWishlists } from "@/lib/goodshuffle-link";
 import { GOODSHUFFLE_HOME } from "@/lib/quote-rules";
 import NoAccount from "@/components/NoAccount";
@@ -161,7 +161,8 @@ export default async function QuotesPage({ searchParams }: PageProps<"/quotes">)
   };
   const stageFilter = (Object.keys(STAGE_LABEL) as Stage[]).includes(status as Stage) ? (status as Stage) : null;
   const groupFilter = GROUPS.some((g) => g.key === status) ? (status as Group) : null;
-  const inRange = (v: number | null, min: number | null, max: number | null) => (min == null || (v != null && v >= min)) && (max == null || (v != null && v <= max));
+  const inRange = (v: number | null, min: number | null, max: number | null) =>
+    (min == null || (v != null && v >= min)) && (max == null || (v != null && v <= max));
   const shown = rows.filter((r) => {
     if (groupFilter && r.group !== groupFilter) return false;
     if (stageFilter && r.status !== STAGE_LABEL[stageFilter]) return false;
@@ -175,14 +176,18 @@ export default async function QuotesPage({ searchParams }: PageProps<"/quotes">)
     if (f.billing.length && !f.billing.some((b) => (r.billing ?? "").toLowerCase() === b.toLowerCase())) return false;
     return true;
   });
-  const sort = ["event", "name", "total", "updated"].includes(one(sp.sort)) ? one(sp.sort) : "updated";
+  const sort = ["event", "name", ...(GSP_DETAILS_LIVE ? ["total"] : []), "updated"].includes(one(sp.sort)) ? one(sp.sort) : "updated";
   const dir = one(sp.dir) === "asc" ? 1 : one(sp.dir) === "desc" ? -1 : sort === "event" || sort === "name" ? 1 : -1;
-  const val = (r: Row) => (sort === "event" ? (r.eventDate ?? "9999") : sort === "name" ? r.name.toLowerCase() : sort === "total" ? (r.total ?? -1) : r.updated);
+  const val = (r: Row) =>
+    sort === "event" ? (r.eventDate ?? "9999") : sort === "name" ? r.name.toLowerCase() : sort === "total" ? (r.total ?? -1) : r.updated;
   shown.sort((a, b) => (val(a) < val(b) ? -dir : val(a) > val(b) ? dir : 0));
 
   const view = one(sp.view) === "board" ? "board" : "list";
   const counts = Object.fromEntries(GROUPS.map((g) => [g.key, rows.filter((r) => r.group === g.key).length])) as Record<Group, number>;
   const hasGspDetails = projects.length > 0;
+  // Totals, billing, logistics and signed status are "Coming soon" until the Goodshuffle sync exists.
+  const live = GSP_DETAILS_LIVE;
+  const groups = live ? GROUPS : GROUPS.filter((g) => g.key !== "signed");
 
   const params = (patch: Record<string, string | null>) => {
     const u = new URLSearchParams();
@@ -195,12 +200,17 @@ export default async function QuotesPage({ searchParams }: PageProps<"/quotes">)
     return s ? `/quotes?${s}` : "/quotes";
   };
   const sortLink = (key: string, label: string) => (
-    <Link href={params({ sort: key, dir: sort === key ? (dir === 1 ? "desc" : "asc") : null })}>
+    <Link
+      href={params({
+        sort: key,
+        dir: sort === key ? (dir === 1 ? "desc" : "asc") : null,
+      })}
+    >
       {label}
       {sort === key ? (dir === 1 ? " ↑" : " ↓") : ""}
     </Link>
   );
-  const cols = "minmax(180px,1.4fr) minmax(140px,1fr) 110px 130px 100px 100px 90px";
+  const cols = live ? "minmax(180px,1.4fr) minmax(140px,1fr) 110px 130px 100px 100px 90px" : "minmax(180px,1.4fr) minmax(160px,1.2fr) 110px 150px 90px";
 
   const rowInner = (r: Row) => (
     <>
@@ -216,14 +226,22 @@ export default async function QuotesPage({ searchParams }: PageProps<"/quotes">)
         {r.eventDate ? shortDate(`${r.eventDate}T12:00:00Z`) : ""}
       </span>
       <span>
-        <span className={`t-pill ${r.group === "action" ? "warn" : r.group === "signed" ? "ok" : r.group === "sent" ? "pipe" : r.group === "new" ? "brand" : ""}`}>{r.status}</span>
+        <span
+          className={`t-pill ${r.group === "action" ? "warn" : r.group === "signed" ? "ok" : r.group === "sent" ? "pipe" : r.group === "new" ? "brand" : ""}`}
+        >
+          {r.status}
+        </span>
       </span>
-      <span className="c-x r" data-l="Total">
-        {money(r.total)}
-      </span>
-      <span className="c-x r" data-l="Due">
-        {money(r.due)}
-      </span>
+      {live && (
+        <>
+          <span className="c-x r" data-l="Total">
+            {money(r.total)}
+          </span>
+          <span className="c-x r" data-l="Due">
+            {money(r.due)}
+          </span>
+        </>
+      )}
       <span className="r">
         {r.gspUrl && (
           <a className="t-link" href={r.gspUrl} target="_blank" rel="noopener noreferrer">
@@ -237,13 +255,26 @@ export default async function QuotesPage({ searchParams }: PageProps<"/quotes">)
   return (
     <div className="flex flex-col gap-3 t-in">
       <section className="t-stats" aria-label="Goodshuffle status">
-        {GROUPS.filter((g) => g.key !== "closed").map((g) => (
-          <Link key={g.key} className="t-stat" href={params({ status: groupFilter === g.key ? null : g.key })} aria-current={groupFilter === g.key ? "true" : undefined}>
-            <span>{g.label}</span>
-            <b>{counts[g.key]}</b>
-            <em>{g.key === "signed" && !hasGspDetails ? "Needs the Goodshuffle sync" : g.key === "action" ? "Waiting on the team" : " "}</em>
-          </Link>
-        ))}
+        {GROUPS.filter((g) => g.key !== "closed").map((g) =>
+          g.key === "signed" && !live ? (
+            <div key={g.key} className="t-stat soon" title="Signed status comes from Goodshuffle once the Goodshuffle sync is set up">
+              <span>{g.label}</span>
+              <b>–</b>
+              <em>Coming soon</em>
+            </div>
+          ) : (
+            <Link
+              key={g.key}
+              className="t-stat"
+              href={params({ status: groupFilter === g.key ? null : g.key })}
+              aria-current={groupFilter === g.key ? "true" : undefined}
+            >
+              <span>{g.label}</span>
+              <b>{counts[g.key]}</b>
+              <em>{g.key === "action" ? "Waiting on the team" : " "}</em>
+            </Link>
+          ),
+        )}
       </section>
 
       <div className="t-vhead">
@@ -268,7 +299,7 @@ export default async function QuotesPage({ searchParams }: PageProps<"/quotes">)
           <Link href={params({ status: null })} aria-current={!status ? "true" : undefined}>
             Open <small>{rows.filter((r) => r.group !== "closed").length}</small>
           </Link>
-          {GROUPS.map((g) => (
+          {groups.map((g) => (
             <Link key={g.key} href={params({ status: g.key })} aria-current={groupFilter === g.key ? "true" : undefined}>
               {g.label} <small>{counts[g.key]}</small>
             </Link>
@@ -287,27 +318,35 @@ export default async function QuotesPage({ searchParams }: PageProps<"/quotes">)
               <input type="date" name="event_from" defaultValue={f.eventFrom} aria-label="Event date from" />
               <input type="date" name="event_to" defaultValue={f.eventTo} aria-label="Event date to" />
             </div>
-            <span className="cap">Logistics start and end</span>
-            <div className="pair">
-              <input type="date" name="log_from" defaultValue={f.logFrom} aria-label="Logistics start from" />
-              <input type="date" name="log_to" defaultValue={f.logTo} aria-label="Logistics end by" />
-            </div>
-            <span className="cap">Quote total ($)</span>
-            <div className="pair">
-              <input type="number" name="total_min" min={0} defaultValue={one(sp.total_min)} placeholder="Min" aria-label="Quote total at least" />
-              <input type="number" name="total_max" min={0} defaultValue={one(sp.total_max)} placeholder="Max" aria-label="Quote total at most" />
-            </div>
-            <span className="cap">Amount due ($)</span>
-            <div className="pair">
-              <input type="number" name="due_min" min={0} defaultValue={one(sp.due_min)} placeholder="Min" aria-label="Amount due at least" />
-              <input type="number" name="due_max" min={0} defaultValue={one(sp.due_max)} placeholder="Max" aria-label="Amount due at most" />
-            </div>
-            <span className="cap">Billing status</span>
-            {BILLING.map((b) => (
-              <label key={b} className="chk">
-                <input type="checkbox" name="billing" value={b} defaultChecked={f.billing.includes(b)} /> {b}
-              </label>
-            ))}
+            {live ? (
+              <>
+                <span className="cap">Logistics start and end</span>
+                <div className="pair">
+                  <input type="date" name="log_from" defaultValue={f.logFrom} aria-label="Logistics start from" />
+                  <input type="date" name="log_to" defaultValue={f.logTo} aria-label="Logistics end by" />
+                </div>
+                <span className="cap">Quote total ($)</span>
+                <div className="pair">
+                  <input type="number" name="total_min" min={0} defaultValue={one(sp.total_min)} placeholder="Min" aria-label="Quote total at least" />
+                  <input type="number" name="total_max" min={0} defaultValue={one(sp.total_max)} placeholder="Max" aria-label="Quote total at most" />
+                </div>
+                <span className="cap">Amount due ($)</span>
+                <div className="pair">
+                  <input type="number" name="due_min" min={0} defaultValue={one(sp.due_min)} placeholder="Min" aria-label="Amount due at least" />
+                  <input type="number" name="due_max" min={0} defaultValue={one(sp.due_max)} placeholder="Max" aria-label="Amount due at most" />
+                </div>
+                <span className="cap">Billing status</span>
+                {BILLING.map((b) => (
+                  <label key={b} className="chk">
+                    <input type="checkbox" name="billing" value={b} defaultChecked={f.billing.includes(b)} /> {b}
+                  </label>
+                ))}
+              </>
+            ) : (
+              <p className="soon">
+                <b>Coming soon:</b> logistics dates, quote total, amount due and billing status, once the Goodshuffle sync is set up.
+              </p>
+            )}
             <div className="t-acts mt-1">
               <button className="t-btn brand" type="submit">
                 Apply
@@ -317,7 +356,7 @@ export default async function QuotesPage({ searchParams }: PageProps<"/quotes">)
               </Link>
             </div>
           </form>
-          {!hasGspDetails && (
+          {live && !hasGspDetails && (
             <p className="note">
               Totals, logistics and billing fill in once the Goodshuffle sync is set up. Until then those filters only match projects that have them.
             </p>
@@ -332,8 +371,8 @@ export default async function QuotesPage({ searchParams }: PageProps<"/quotes">)
                 <span>Project · venue</span>
                 <span>{sortLink("event", "Event")}</span>
                 <span>Status</span>
-                <span className="r">{sortLink("total", "Total")}</span>
-                <span className="r">Due</span>
+                {live && <span className="r">{sortLink("total", "Total")}</span>}
+                {live && <span className="r">Due</span>}
                 <span />
               </div>
               {shown.length === 0 && <p className="t-empty">No quotes match.</p>}
@@ -351,7 +390,7 @@ export default async function QuotesPage({ searchParams }: PageProps<"/quotes">)
             </div>
           ) : (
             <div className="t-board">
-              {GROUPS.map((g) => {
+              {groups.map((g) => {
                 const items = shown.filter((r) => r.group === g.key);
                 return (
                   <div key={g.key} className="t-lane">
@@ -365,7 +404,9 @@ export default async function QuotesPage({ searchParams }: PageProps<"/quotes">)
                         const inner = (
                           <span className="t-stack">
                             <b>{r.name}</b>
-                            <span>{[r.project, r.eventDate ? shortDate(`${r.eventDate}T12:00:00Z`) : "", money(r.total)].filter(Boolean).join(" · ")}</span>
+                            <span>
+                              {[r.project, r.eventDate ? shortDate(`${r.eventDate}T12:00:00Z`) : "", live ? money(r.total) : ""].filter(Boolean).join(" · ")}
+                            </span>
                           </span>
                         );
                         return r.emailId ? (
@@ -390,8 +431,13 @@ export default async function QuotesPage({ searchParams }: PageProps<"/quotes">)
             </div>
           )}
           <p className="t-note">
-            {shown.length} of {rows.length}. Projects come from Goodshuffle&apos;s emails (website wishlists, and the project number in quote and invoice emails)
-            {hasGspDetails ? " and the Goodshuffle sync." : ". Signed status, totals and billing need the Goodshuffle sync."}
+            {shown.length} of {rows.length}. Projects come from Goodshuffle&apos;s emails (website wishlists, and the project number in quote and invoice
+            emails)
+            {live
+              ? hasGspDetails
+                ? " and the Goodshuffle sync."
+                : ". Signed status, totals and billing need the Goodshuffle sync."
+              : ". Signed status, totals and billing are coming soon."}
           </p>
         </div>
       </div>

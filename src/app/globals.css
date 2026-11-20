@@ -541,3 +541,9 @@ button.t-tr:hover { background: var(--surface-2); }
   .t-tr .c-x:empty { display: none; }
   .t-board { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* "Coming soon" for Goodshuffle details that wait on the Goodshuffle sync. */
+.t-stat.soon b { color: #6f6d8c; }
+.t-stat.soon em { color: var(--amber); font-weight: 600; }
+.t-filter p.soon { margin: 4px 0 2px; padding: 8px 10px; border-radius: 7px; border: 1px dashed var(--line); color: var(--muted); font-size: 12px; line-height: 1.4; }
+.t-filter p.soon b { color: var(--fg); font-weight: 650; }

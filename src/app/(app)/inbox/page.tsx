@@ -119,8 +119,8 @@ export default async function InboxPage() {
             {gsp.length ? gsp.map(card) : <p className="t-empty">No drafts on Goodshuffle emails right now.</p>}
           </div>
           <p className="t-note px-3 pb-3">
-            Messages written inside Goodshuffle Pro itself will show here once the Goodshuffle sync is set up (Goodshuffle has no API, so it reads them from Leo&apos;s
-            Chrome).
+            <b>Coming soon:</b> messages written inside Goodshuffle Pro. They&apos;ll show here with a drafted reply, and after Approve the reply is sent from
+            Goodshuffle&apos;s own Messages window in Chrome, signed in as support@.
           </p>
         </section>
       </div>

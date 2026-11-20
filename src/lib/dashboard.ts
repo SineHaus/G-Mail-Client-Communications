@@ -13,8 +13,16 @@ export type DraftRow = Draft & { emails: Email & { clients: Client | null } };
 
 export const PIPELINE: { key: string; label: string; stages: Stage[] }[] = [
   { key: "gathering", label: "Gathering info", stages: ["gathering"] },
-  { key: "build", label: "Put quote together", stages: ["ready_to_build", "building"] },
-  { key: "send", label: "Ready to send", stages: ["ready_to_send", "approved_to_send"] },
+  {
+    key: "build",
+    label: "Put quote together",
+    stages: ["ready_to_build", "building"],
+  },
+  {
+    key: "send",
+    label: "Ready to send",
+    stages: ["ready_to_send", "approved_to_send"],
+  },
   { key: "sent", label: "Quote sent", stages: ["quote_sent"] },
 ];
 
@@ -33,11 +41,18 @@ export async function loadQuotes(accountId: string, limit = 500): Promise<QuoteR
   const clients = new Map<string, QuoteClient>();
   for (let i = 0; i < ids.length; i += 200) {
     const rows = must(
-      await db().from("clients").select("id,name,email,phone").eq("account_id", accountId).in("id", ids.slice(i, i + 200)),
+      await db()
+        .from("clients")
+        .select("id,name,email,phone")
+        .eq("account_id", accountId)
+        .in("id", ids.slice(i, i + 200)),
     ) as QuoteClient[];
     for (const c of rows) clients.set(c.id, c);
   }
-  return quotes.map((q) => ({ ...q, client: q.client_id ? (clients.get(q.client_id) ?? null) : null }));
+  return quotes.map((q) => ({
+    ...q,
+    client: q.client_id ? (clients.get(q.client_id) ?? null) : null,
+  }));
 }
 
 export async function loadOpenDrafts(accountId: string): Promise<DraftRow[]> {
@@ -52,7 +67,9 @@ export async function loadOpenDrafts(accountId: string): Promise<DraftRow[]> {
   ) as unknown as DraftRow[];
 }
 
-export type InboxEmail = Email & { clients: Pick<Client, "id" | "name" | "email" | "ignored"> | null };
+export type InboxEmail = Email & {
+  clients: Pick<Client, "id" | "name" | "email" | "ignored"> | null;
+};
 
 /** Newest emails from customers (not from people marked "not a client"). */
 export async function loadRecentInbound(accountId: string, limit = 40): Promise<InboxEmail[]> {
@@ -91,16 +108,32 @@ export async function followUpsDue(accountId: string, quotes: QuoteRow[]) {
         .in("gmail_thread_id", threads.slice(i, i + 100))
         .order("sent_at", { ascending: false })
         .limit(2000),
-    ) as { id: string; gmail_thread_id: string; direction: string; sent_at: string }[];
+    ) as {
+      id: string;
+      gmail_thread_id: string;
+      direction: string;
+      sent_at: string;
+    }[];
     for (const r of rows) if (!latest.has(r.gmail_thread_id)) latest.set(r.gmail_thread_id, r);
   }
   const cutoff = Date.now() - FOLLOW_UP_DAYS * DAY;
   return sent
     .map((q) => ({ q, last: latest.get(q.gmail_thread_id) }))
     .filter((x) => x.last && x.last.direction === "outbound" && new Date(x.last.sent_at).getTime() < cutoff)
-    .map((x) => ({ q: x.q, lastEmailId: x.last!.id, days: Math.floor((Date.now() - new Date(x.last!.sent_at).getTime()) / DAY) }))
+    .map((x) => ({
+      q: x.q,
+      lastEmailId: x.last!.id,
+      days: Math.floor((Date.now() - new Date(x.last!.sent_at).getTime()) / DAY),
+    }))
     .sort((a, b) => b.days - a.days);
 }
+
+/**
+ * Goodshuffle totals, amounts due, billing, logistics and signed status. Leo asked for these to show as
+ * "Coming soon" for now (Nov 20): Goodshuffle has no API, so they wait for a Goodshuffle project sync.
+ * Turn this on once goodshuffle_projects is being filled.
+ */
+export const GSP_DETAILS_LIVE = false;
 
 export interface GoodshuffleProject {
   gsp_project_id: string;
@@ -125,7 +158,9 @@ export async function loadGoodshuffleProjects(accountId: string): Promise<Goodsh
   return must(
     await db()
       .from("goodshuffle_projects")
-      .select("gsp_project_id,url,project_name,client_name,client_email,venue,status,event_date,logistics_start,logistics_end,quote_total,amount_due,billing_status,synced_at")
+      .select(
+        "gsp_project_id,url,project_name,client_name,client_email,venue,status,event_date,logistics_start,logistics_end,quote_total,amount_due,billing_status,synced_at",
+      )
       .eq("account_id", accountId)
       .order("event_date", { ascending: true })
       .limit(2000),
@@ -134,9 +169,21 @@ export async function loadGoodshuffleProjects(accountId: string): Promise<Goodsh
 
 export const personName = (q: QuoteRow) => q.client?.name || q.info?.name || q.title || q.client?.email || "Customer";
 export const shortDate = (iso: string | null | undefined) =>
-  iso ? new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "America/New_York" }) : "";
+  iso
+    ? new Date(iso).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        timeZone: "America/New_York",
+      })
+    : "";
 export const money = (n: number | null | undefined) =>
-  n == null ? "" : n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+  n == null
+    ? ""
+    : n.toLocaleString("en-US", {
+        style: "currency",
+        currency: "USD",
+        maximumFractionDigits: 0,
+      });
 export const initials = (s: string) =>
   s
     .replace(/@.*/, "")
