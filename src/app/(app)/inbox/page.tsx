@@ -12,6 +12,10 @@ import DraftActions from "@/components/DraftActions";
 import ReadyForGoodshuffleButton from "@/components/ReadyForGoodshuffleButton";
 import { OpenThread } from "@/components/shell/ThreadPanel";
 import Icon from "@/components/shell/icons";
+import GspReplyCard from "@/components/GspReplyCard";
+import { loadOpenReplies } from "@/lib/goodshuffle-messages";
+import { goodshuffleMessagesReady } from "@/lib/schema-ready";
+import { gspMessagesUrl } from "@/lib/gsp-messages";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -26,9 +30,11 @@ export default async function InboxPage() {
   if (!acct) return <NoAccount isOwner={member.is_owner} />;
   const canEdit = can(acct.role, "edit");
   const canApprove = can(acct.role, "approve");
-  const [drafts, quotes] = await Promise.all([loadOpenDrafts(acct.id), loadQuotes(acct.id)]);
+  const gspReady = await goodshuffleMessagesReady().catch(() => false);
+  const [drafts, quotes, gspReplies] = await Promise.all([loadOpenDrafts(acct.id), loadQuotes(acct.id), gspReady ? loadOpenReplies(acct.id) : Promise.resolve([])]);
   const byThread = new Map(quotes.map((q) => [q.gmail_thread_id, q]));
   const gsp = drafts.filter((d) => gspFromSubject(d.emails.subject));
+  const gspReplyProjects = new Set(gspReplies.map((r) => r.reply.gsp_project_id));
   const gmail = drafts.filter((d) => !gspFromSubject(d.emails.subject));
 
   const card = (r: DraftRow) => {
@@ -52,6 +58,9 @@ export default async function InboxPage() {
         <div className="t-sub" style={{ whiteSpace: "normal" }}>
           {(e.snippet || e.body || "").slice(0, 180)}
         </div>
+        {project && gspReplyProjects.has(project.id) && (
+          <p className="t-banner">This customer&apos;s message also has a Goodshuffle reply drafted above. Send only one of the two.</p>
+        )}
         {r.error && !r.body ? (
           <p className="t-banner">
             Couldn&apos;t draft a reply ({fmtDate(r.updated_at)}): {r.error}
@@ -111,17 +120,28 @@ export default async function InboxPage() {
             </span>
             <div className="grow">
               <h2 data-n="02">Goodshuffle Pro</h2>
-              <p>Emails about a Goodshuffle project (quotes, invoices, replies), by the project number in the subject.</p>
+              <p>Messages written in Goodshuffle Pro, and emails about a Goodshuffle project (by the project number in the subject).</p>
             </div>
-            <span className="t-count">{gsp.length}</span>
+            <span className="t-count">{gsp.length + gspReplies.length}</span>
           </div>
           <div className="t-list" style={{ maxHeight: "none" }}>
-            {gsp.length ? gsp.map(card) : <p className="t-empty">No drafts on Goodshuffle emails right now.</p>}
+            {gspReplies.map(({ reply, messages }) => (
+              <GspReplyCard key={reply.id} reply={reply} messages={messages} url={gspMessagesUrl(reply.gsp_project_id)} canEdit={canEdit} canApprove={canApprove} />
+            ))}
+            {gsp.map(card)}
+            {!gsp.length && !gspReplies.length && <p className="t-empty">No drafts on Goodshuffle messages or emails right now.</p>}
           </div>
-          <p className="t-note px-3 pb-3">
-            <b>Coming soon:</b> messages written inside Goodshuffle Pro. They&apos;ll show here with a drafted reply, and after Approve the reply is sent from
-            Goodshuffle&apos;s own Messages window in Chrome, signed in as support@.
-          </p>
+          {gspReady ? (
+            <p className="t-note px-3 pb-3">
+              Messages written in Goodshuffle Pro arrive through the Goodshuffle extension in Chrome. After Approve, the extension types the reply into
+              Goodshuffle&apos;s own reply box and sends it, signed in as support@.
+            </p>
+          ) : (
+            <p className="t-note px-3 pb-3">
+              <b>Coming soon:</b> messages written inside Goodshuffle Pro, with a drafted reply that&apos;s sent from Goodshuffle&apos;s own Messages window after
+              Approve. It starts once migration 007 is run and the Goodshuffle extension is connected in Settings.
+            </p>
+          )}
         </section>
       </div>
     </div>

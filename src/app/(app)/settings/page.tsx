@@ -10,6 +10,9 @@ import ReplyRules from "@/components/ReplyRules";
 import QuoteChecklist from "@/components/QuoteChecklist";
 import { CHECKLIST_KEY } from "@/lib/quotes";
 import { DEFAULT_CHECKLIST } from "@/lib/quote-rules";
+import GspDevices from "@/components/GspDevices";
+import { listDevices } from "@/lib/goodshuffle-messages";
+import { goodshuffleMessagesReady } from "@/lib/schema-ready";
 
 export const dynamic = "force-dynamic";
 // Server actions on this page (Sync now, Redraft, Review, Retry) call Claude; give them the full 5 minutes.
@@ -35,6 +38,9 @@ export default async function SettingsPage({ searchParams }: PageProps<"/setting
   const checklistRow = checklist.data as { value: string; updated_by: string | null; updated_at: string } | null;
   const rulesRow = rules.data as { value: string; updated_by: string | null; updated_at: string } | null;
   const acctName = Object.fromEntries(accounts.map((a) => [a.id, a.email_address]));
+  const gspReady = isOwner && current ? await goodshuffleMessagesReady().catch(() => false) : false;
+  const gspDevices = gspReady && current ? await listDevices(current.id) : [];
+  const origin = process.env.APP_URL?.replace(/\/$/, "") ?? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
@@ -123,6 +129,22 @@ export default async function SettingsPage({ searchParams }: PageProps<"/setting
             Claude copies the tone of these past replies when drafting for this inbox. Import some from its Sent mail, or paste good examples. 10–20 varied examples works well.
           </p>
           <StyleExamples examples={(styles.data ?? []) as { id: string; context: string | null; body: string; created_at: string }[]} />
+        </section>
+      )}
+
+      {isOwner && current && (
+        <section className="card p-5">
+          <h2 className="font-semibold">Goodshuffle messages</h2>
+          <p className="mb-4 text-sm text-stone-500">
+            The Goodshuffle extension runs in the Chrome that&apos;s signed in to Goodshuffle Pro as support@. It copies new Goodshuffle messages into the Inbox
+            and, after someone presses Approve, types the reply into Goodshuffle&apos;s reply box and sends it. It does nothing if Goodshuffle is signed in as
+            anyone else. Setup steps are in docs/goodshuffle-messages.md.
+          </p>
+          {gspReady ? (
+            <GspDevices devices={gspDevices} origin={origin} />
+          ) : (
+            <p className="text-sm">Run migration 007 (supabase/migrations/007_goodshuffle_messages.sql) in Supabase first, then reload this page.</p>
+          )}
         </section>
       )}
 

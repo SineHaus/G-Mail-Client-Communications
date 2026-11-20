@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, verifySessionValue } from "@/lib/session";
 
 // Paths reachable without signing in.
-const PUBLIC = ["/login", "/api/auth/", "/api/gmail/webhook", "/api/cron/"];
+// /api/goodshuffle is the Chrome extension's; it signs in with its own device token instead of a session.
+const PUBLIC = ["/login", "/api/auth/", "/api/gmail/webhook", "/api/cron/", "/api/goodshuffle"];
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;

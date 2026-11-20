@@ -1,50 +1,66 @@
-# Goodshuffle Pro messages in the dashboard (plan, not built)
+# Goodshuffle Pro messages in the dashboard
 
 Leo's direction (Nov 20): replies to Goodshuffle Pro messages go out through Goodshuffle's own Messages
-window in his Chrome (Mac or Windows), signed in only as support@theeventrentalguys.com. Every reply is
-approved in the dashboard first. Goodshuffle has no API, so the dashboard can't read or send these itself.
+window in his Chrome, signed in only as support@theeventrentalguys.com. Every reply is approved in the
+dashboard first. Goodshuffle has no API, so a small Chrome extension does the reading and the typing.
 
-## What's already covered by email
+## How it works
 
-Goodshuffle's quote and invoice emails carry "(Project #…)" in the subject. When a customer replies to one,
-the reply reaches support@ as a normal email, and the dashboard already shows it in the Inbox's Goodshuffle
-Pro box with a drafted reply. Those replies go out by email from support@, which keeps the project number in
-the subject. What's missing is messages written inside Goodshuffle Pro's Messages window.
+1. **Read.** Every 2 minutes the extension (`extensions/goodshuffle-messages`) checks which Goodshuffle login
+   this Chrome has (`/app/login/isAuthenticated`). Anything other than support@ and it stops: nothing is
+   read or sent. Otherwise it asks the dashboard which projects to read and reads their client conversation
+   (`/app/conversation/getMessagesForTransaction?transactionID=…`, the same request the Messages window makes),
+   then copies the messages to the dashboard (`POST /api/goodshuffle`, with a device token from Settings).
+2. **Which projects.** A customer's Goodshuffle message also arrives at support@ as an email whose subject
+   names the project ("Re: … (Project #232040555)"). The dashboard asks for a project when such an email is
+   newer than its last read, when a reply to it is on its way, and once an hour for known conversations. The
+   extension also adds Goodshuffle's own unread list when it can read it.
+3. **Draft.** When the newest message in a conversation is the customer's, Claude drafts a reply with the
+   usual rules (never offers delivery or pickup dates, placeholders like [PRICE] for what Leo fills in) and
+   no sign-off, since Goodshuffle adds Leo's signature by itself. It shows in the Inbox's Goodshuffle Pro box.
+4. **Approve.** Someone with Approve on the account edits it if needed and presses Approve, then confirms.
+   That's the only way a reply reaches the extension. Decline, Save edits and Redraft work as for emails.
+5. **Send.** The extension claims the approved reply (once), checks again that Goodshuffle is signed in as
+   support@ and that the customer hasn't written again since the draft, opens the conversation
+   (`/ui/message/inbox/<project>`) in a small window, presses **Reply**, checks the reply is addressed to this
+   project's customer with this project's subject, types the approved text above the signature, checks the box
+   holds exactly that text, presses **Send Message**, and closes the window. It then checks Goodshuffle shows
+   the reply and marks it Sent in the dashboard.
+6. **When something's off,** it stops without sending and the dashboard shows the reason on the card. A reply
+   is never retried by itself. If Send Message was pressed but the reply couldn't be seen afterwards, the card
+   says to check Goodshuffle first, and Approve refuses while Goodshuffle shows a newer reply from support@.
 
-## Proposed build: a small Chrome extension in Leo's Chrome
+## Setting it up (Leo)
 
-1. **Read messages.** The extension runs only on pro.goodshuffle.com. While Goodshuffle is open, it reads
-   new customer messages from the Messages window and sends them to the dashboard
-   (`POST /api/goodshuffle/messages`, with a device token Leo creates in Settings). Each message is stored
-   with its Goodshuffle project number and linked to the customer and quote card.
-2. **Draft.** Claude drafts a reply the same way it does for emails (same rules: never offers delivery or
-   pickup dates). It shows in the Inbox's Goodshuffle Pro box and in the thread side panel.
-3. **Approve.** Approve in the dashboard is the yes for that one reply, with exactly the text shown. The reply
-   goes into a send queue (`goodshuffle_outbox`).
-4. **Send.** The extension picks up approved replies, opens that project's conversation in the Messages
-   window, enters the text and sends it, then reads the page back and marks the reply sent in the dashboard
-   only once Goodshuffle shows it. If anything doesn't match (another project, text changed, send failed), it
-   stops and the card shows what happened.
+1. Run `supabase/migrations/007_goodshuffle_messages.sql` in Supabase → SQL Editor (after 006).
+2. In the dashboard, **Settings → Goodshuffle messages → Connect a Chrome**. Copy the dashboard address and
+   the token it shows (shown once).
+3. In the Chrome on the MacBook Pro that's signed in to Goodshuffle Pro as support@: open
+   `chrome://extensions`, turn on **Developer mode**, press **Load unpacked**, and choose the
+   `extensions/goodshuffle-messages` folder from this repository (download the repository as a ZIP from
+   GitHub and unzip it, or use a clone).
+4. Click the extension's icon (pin it from the puzzle-piece menu), paste the address and token, press
+   **Save and check now**, and choose **Allow** when Chrome asks to reach the dashboard. The status line says
+   what it saw ("Signed in as support@. Read 3 conversations.").
+5. Leave that Chrome open. A red **!** on the icon means it needs attention; click it to see why.
 
-Safety rules built into the extension:
+To stop it: Settings → Disconnect, or remove the extension in `chrome://extensions`.
 
-- It checks the signed-in Goodshuffle account is support@theeventrentalguys.com before reading or sending,
-  and does nothing on any other account.
-- It only sends replies approved in the dashboard, once each, and never sends anything on its own.
-- It never touches billing, payments, project items or settings in Goodshuffle.
+## What Goodshuffle looks like (read-only look, Nov 20)
 
-## Other ways, and why not
+- Signed in as support@. Messages are emails between support@ and the customer (`medium: EMAIL`), each with
+  `id`, `date`, `eventType` (`USER_MESSAGE` or `SYSTEM_ACTION`), `sender` (customers have a `contactID`),
+  `messageText` (HTML), `subject`, and `fromCurrentUser`.
+- The reply box is a Quill editor (`.gsp-compose-message-input-wrapper .ql-editor`). Reply fills in the
+  customer and the subject; the send button is **Send Message** and stays off until there's text.
 
-- **Claude in Chrome, one session per reply:** works without new code, but each reply needs a Claude session
-  to open Goodshuffle and type it, so it's slower, and nothing comes into the dashboard on its own.
-- **Goodshuffle's message notification emails:** if Goodshuffle emails support@ when a customer writes in the
-  Messages window, the dashboard could read those notices without an extension. Replying by email to a notice
-  probably doesn't land back in Goodshuffle, so sending would still need the extension. Not yet checked.
+## Not known yet
 
-## Needed from Leo before building
+- Whether reading a conversation through Goodshuffle marks its messages as read in Goodshuffle's own inbox.
+  It may, since it's the same request the Messages window makes.
+- The exact format of `listTransactions` (the unread list); the extension reads it only if it can and doesn't
+  depend on it.
+- Whether the signature sits inside the reply box or under it; the extension handles both.
 
-- One look at the Messages window in his Chrome, signed in as support@, so the extension matches Goodshuffle's
-  page. Nothing is sent during that look.
-- Which computer runs it (Mac or Windows). Chrome needs to stay open with Goodshuffle signed in for messages
-  to come in and approved replies to go out.
-- Migration 007 (`goodshuffle_messages`, `goodshuffle_outbox`) when the build lands.
+The first approved reply is the real test of the send steps. Approve one short reply while watching the
+window the extension opens, then check the conversation in Goodshuffle.

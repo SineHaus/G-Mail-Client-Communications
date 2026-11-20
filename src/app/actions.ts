@@ -24,6 +24,7 @@ import { CHECKLIST_KEY, getChecklist, missingFor, quoteForThread, type QuoteRequ
 import { ITEMS_KEY, applyItemChange, cleanGoodshuffleUrl, itemsSummary, mergeInfo, textToItems } from "@/lib/quote-rules";
 import { runCommand, type ProposedChange } from "@/lib/agent-commands";
 import { noAutoLinkKey } from "@/lib/goodshuffle-link";
+import { approveReply, createDevice, declineReply, reviseGspReply, revokeDevice, saveReplyText } from "@/lib/goodshuffle-messages";
 
 type Result<T = undefined> = { ok: true; data?: T } | { ok: false; error: string };
 type Ctx = Awaited<ReturnType<typeof requireAccount>>;
@@ -725,6 +726,44 @@ export async function setOwnerAction(memberId: string, isOwner: boolean) {
     must(await db().from("team_members").update({ is_owner: isOwner }).eq("id", memberId).select("id"));
     await audit(actor, isOwner ? "made_owner" : "removed_owner", { detail: memberId });
   });
+  revalidatePath("/settings");
+  return r;
+}
+
+// ---------- Goodshuffle Pro messages (sent by the Chrome extension, only after Approve) ----------
+
+/** Approve: queues exactly `bodyOnScreen` for the extension to type into Goodshuffle and send. */
+export async function approveGspReplyAction(id: string, bodyOnScreen: string) {
+  const r = await run("approve", (c) => approveReply(c.accountId, id, bodyOnScreen, c.member.email));
+  refreshAll();
+  return r;
+}
+
+export async function declineGspReplyAction(id: string) {
+  const r = await run("edit", (c) => declineReply(c.accountId, id, c.member.email));
+  refreshAll();
+  return r;
+}
+
+export async function saveGspReplyAction(id: string, body: string) {
+  const r = await run("edit", (c) => saveReplyText(c.accountId, id, body, c.member.email));
+  refreshAll();
+  return r;
+}
+
+export async function reviseGspReplyAction(id: string, instruction: string, currentBody: string) {
+  const r = await run("edit", (c) => reviseGspReply(c.accountId, id, instruction, currentBody, c.member.email));
+  refreshAll();
+  return r;
+}
+
+/** A token for the Chrome that runs the extension (shown once). Owner only. */
+export async function createGspDeviceAction(label: string) {
+  return run("manage", (c) => createDevice(c.accountId, label, c.member.email));
+}
+
+export async function revokeGspDeviceAction(deviceId: string) {
+  const r = await run("manage", (c) => revokeDevice(c.accountId, deviceId, c.member.email));
   revalidatePath("/settings");
   return r;
 }

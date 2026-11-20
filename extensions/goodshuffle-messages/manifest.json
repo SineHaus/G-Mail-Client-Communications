@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "TERG Goodshuffle messages",
+  "version": "1.0.0",
+  "description": "Copies Goodshuffle Pro messages to the TERG dashboard and sends replies only after someone approves them there. Works only when Goodshuffle is signed in as support@theeventrentalguys.com.",
+  "permissions": ["alarms", "storage", "scripting", "tabs"],
+  "host_permissions": ["https://pro.goodshuffle.com/*"],
+  "optional_host_permissions": ["https://*/*", "http://localhost/*"],
+  "background": { "service_worker": "background.js" },
+  "options_page": "options.html",
+  "action": { "default_title": "TERG Goodshuffle messages", "default_popup": "options.html" }
+}

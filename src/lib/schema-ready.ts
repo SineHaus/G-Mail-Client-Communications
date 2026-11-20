@@ -29,3 +29,6 @@ export const attachmentsColumnReady = probe(() => db().from("emails").select("at
 
 /** goodshuffle_projects exists (migration 006). */
 export const goodshuffleProjectsReady = probe(() => db().from("goodshuffle_projects").select("id").eq("account_id", NO_ACCOUNT).limit(1));
+
+/** goodshuffle_messages, goodshuffle_replies and goodshuffle_devices exist (migration 007). */
+export const goodshuffleMessagesReady = probe(() => db().from("goodshuffle_replies").select("id").eq("account_id", NO_ACCOUNT).limit(1));
