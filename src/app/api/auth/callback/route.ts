@@ -9,6 +9,7 @@ import { startWatch } from "@/lib/watch";
 import { catchUpReadInGmail, setReadSyncNeedsReconnect } from "@/lib/read-sync";
 import { ACCOUNT_COOKIE, accountCookieOptions } from "@/lib/accounts";
 import { createSessionValue, SESSION_COOKIE, sessionCookieOptions, verifySessionValue } from "@/lib/session";
+import { isOwnPreview, makePreviewPass } from "@/lib/preview";
 
 export const maxDuration = 300;
 
@@ -41,7 +42,10 @@ export async function GET(req: NextRequest) {
   if (mode === "add" && !session) return fail("Please sign in first.");
 
   try {
-    return await finishSignIn(code, mode, fail, stateCookie, session);
+    const preview = req.cookies.get(`oauth_preview_${state}`)?.value;
+    const res = await finishSignIn(code, mode, fail, stateCookie, session, preview && isOwnPreview(preview, process.env.VERCEL_URL) ? preview : null);
+    res.cookies.set(`oauth_preview_${state}`, "", { path: "/api/auth", maxAge: 0 });
+    return res;
   } catch (e) {
     console.error("Sign-in callback error", e);
     return fail(`Sign-in failed: ${e instanceof Error ? e.message.slice(0, 300) : String(e)}`);
@@ -54,6 +58,7 @@ async function finishSignIn(
   fail: (msg: string) => NextResponse,
   stateCookie: string,
   session: { email: string } | null,
+  preview: string | null = null,
 ) {
   if (mode !== "add") {
     // Dashboard sign-in: identity only. Must be an active team member (or a bootstrap Owner in ALLOWED_EMAILS).
@@ -61,8 +66,10 @@ async function finishSignIn(
     if (!scopesOk) return fail("Google returned unexpected permissions for sign-in. Please try again.");
     const member = await memberForSignIn(email);
     if (!member) return fail(`${email} isn't on the TERG team list. Ask Leo to add you in Settings → Team.`);
-    await audit(email, "sign_in");
-    const res = NextResponse.redirect(new URL("/", env.appUrl()));
+    await audit(email, preview ? "sign_in_preview" : "sign_in", { detail: preview });
+    // Signing in for a preview of a pull request: back to that preview with a one-minute pass for it alone.
+    const dest = preview ? `${preview}/api/auth/preview?pass=${encodeURIComponent(await makePreviewPass(email, preview, process.env.SESSION_SECRET ?? ""))}` : new URL("/", env.appUrl());
+    const res = NextResponse.redirect(dest);
     res.cookies.set(SESSION_COOKIE, await createSessionValue(email), sessionCookieOptions);
     res.cookies.set(stateCookie, "", { path: "/api/auth", maxAge: 0 });
     return res;

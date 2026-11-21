@@ -1,4 +1,5 @@
 import { missingEnv } from "@/lib/env";
+import { isPreview } from "@/lib/preview";
 
 export const dynamic = "force-dynamic";
 
@@ -19,8 +20,15 @@ export default async function LoginPage({ searchParams }: PageProps<"/login">) {
             <ul className="mt-1 list-disc pl-5 font-mono text-xs">
               {missing.map((m) => <li key={m}>{m}</li>)}
             </ul>
-            <p className="mt-2 text-xs">Add them in Vercel → Settings → Environment Variables (tick Production), then redeploy.</p>
+            <p className="mt-2 text-xs">
+              Add them in Vercel → Settings → Environment Variables (tick Production{isPreview() ? " and Preview" : ""}), then redeploy.
+            </p>
           </div>
+        )}
+        {isPreview() && (
+          <p className="mt-4 rounded-lg bg-stone-100 p-3 text-left text-xs text-stone-600">
+            This is a preview of a change, using the live dashboard&apos;s data. Signing in goes through the live dashboard and comes back here.
+          </p>
         )}
         {error && <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{String(error)}</p>}
         <a href="/api/auth/google" className="btn-secondary mt-6 w-full py-2.5">
