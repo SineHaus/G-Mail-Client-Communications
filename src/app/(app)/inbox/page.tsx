@@ -44,6 +44,7 @@ export default async function InboxPage() {
     const q: QuoteRow | undefined = byThread.get(e.gmail_thread_id);
     const project = gspFromSubject(e.subject);
     const link = q?.goodshuffle_url ?? project?.url ?? null;
+    const canBuild = canEdit && (!q || q.stage === "gathering" || q.stage === "closed");
     return (
       <div key={r.id} className={`t-card ${!e.is_read && r.status === "pending" ? "unread" : ""}`} style={{ ["--stripe" as string]: "var(--h-comm)" }}>
         <div className="t-card-top">
@@ -69,13 +70,26 @@ export default async function InboxPage() {
           <div className="t-draft">{r.body}</div>
         )}
         {r.status === "pending" && (
-          <DraftActions draftId={r.id} to={to} failed={!!r.error && !r.body} body={r.body} canEdit={canEdit} canApprove={canApprove} />
+          <DraftActions
+            draftId={r.id}
+            to={to}
+            failed={!!r.error && !r.body}
+            body={r.body}
+            canEdit={canEdit}
+            canApprove={canApprove}
+            extra={canBuild ? <ReadyForGoodshuffleButton emailId={e.id} /> : null}
+          />
         )}
         <div className="t-acts">
           <OpenThread emailId={e.id} className="t-link">
             Open the whole conversation
           </OpenThread>
-          {canEdit && (!q || q.stage === "gathering" || q.stage === "closed") && <ReadyForGoodshuffleButton emailId={e.id} />}
+          {canBuild && r.status !== "pending" && <ReadyForGoodshuffleButton emailId={e.id} />}
+          {q?.stage === "ready_to_build" && (
+            <Link className="t-link" href="/approvals">
+              In the approval queue
+            </Link>
+          )}
           {link && (
             <a className="t-link ml-auto" href={link} target="_blank" rel="noopener noreferrer">
               Open in Goodshuffle ↗

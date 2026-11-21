@@ -134,7 +134,7 @@ function ThreadPanel({ emailId, onClose, onOpen }: { emailId: string | null; onC
       if (!view) return;
       const r = await markReadyForGoodshuffleAction(view.emailId);
       if (!r.ok) return setNote(r.error);
-      setNote("Marked ready. It's in the approval queue on Today.");
+      setNote("Started. It's in the approval queue on Today, waiting for Approve.");
       await load(view.emailId);
       router.refresh();
     });
@@ -252,9 +252,9 @@ function ThreadPanel({ emailId, onClose, onOpen }: { emailId: string | null; onC
               {view.canEdit && (!view.quote || view.quote.stage === "gathering" || view.quote.stage === "closed") && (
                 <div className="t-acts">
                   <button type="button" className="t-btn brand" disabled={pending} onClick={markReady}>
-                    {pending ? "Marking…" : "Ready for Goodshuffle"}
+                    {pending ? "Starting…" : "Start building in Goodshuffle Pro"}
                   </button>
-                  <span className="t-note">Puts it in the approval queue to become a Goodshuffle project. Nothing is sent.</span>
+                  <span className="t-note">Puts it in the approval queue to become a Goodshuffle Pro project. Nothing is sent or created in Goodshuffle.</span>
                 </div>
               )}
               {note && <p className="t-note">{note}</p>}
@@ -317,6 +317,13 @@ function ThreadPanel({ emailId, onClose, onOpen }: { emailId: string | null; onC
                 canEdit={view.canEdit}
                 canApprove={view.canApprove}
                 onDone={() => view && load(view.emailId)}
+                extra={
+                  view.canEdit && (!view.quote || view.quote.stage === "gathering" || view.quote.stage === "closed") ? (
+                    <button type="button" className="btn-brand" disabled={pending} onClick={markReady}>
+                      {pending ? "Starting…" : "Start building in Goodshuffle Pro"}
+                    </button>
+                  ) : null
+                }
               />
             )}
           </div>
