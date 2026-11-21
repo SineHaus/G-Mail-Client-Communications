@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { renewExpiringWatches } from "@/lib/watch";
 import { syncHistory } from "@/lib/ingest";
+import { recordSyncError } from "@/lib/sync-health";
 import { draftDeadline, draftMissing } from "@/lib/draft-queue";
 
 export const maxDuration = 300;
@@ -29,6 +30,7 @@ export async function GET(req: NextRequest) {
       syncs.push({ account: a.email_address, drafted, waiting });
     } catch (e) {
       syncs.push({ account: a.email_address, error: e instanceof Error ? e.message : String(e) });
+      await recordSyncError(a.id, "daily", e);
     }
   }
   return NextResponse.json({ watches, syncs });
