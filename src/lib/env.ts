@@ -1,4 +1,5 @@
 import "server-only";
+import { isPreview, previewOrigin } from "./preview";
 
 function req(name: string): string {
   const v = process.env[name];
@@ -22,14 +23,17 @@ export const REQUIRED_ENV = [
   "CRON_SECRET",
 ] as const;
 
+/** Not needed on a preview: it uses its own address, and Gmail push and the daily cron only run on the live dashboard. */
+const NOT_NEEDED_ON_PREVIEW = ["APP_URL", "GMAIL_PUBSUB_TOPIC", "GMAIL_WEBHOOK_TOKEN", "CRON_SECRET"];
+
 export function missingEnv(): string[] {
-  const missing: string[] = REQUIRED_ENV.filter((n) => !process.env[n]?.trim());
+  const missing: string[] = REQUIRED_ENV.filter((n) => !process.env[n]?.trim() && !(isPreview() && NOT_NEEDED_ON_PREVIEW.includes(n)));
   if (process.env.SESSION_SECRET && process.env.SESSION_SECRET.length < 32) missing.push("SESSION_SECRET (must be 32+ characters)");
   return missing;
 }
 
 export const env = {
-  appUrl: () => (process.env.APP_URL ?? "http://localhost:3000").replace(/\/$/, ""),
+  appUrl: () => ((isPreview() && previewOrigin()) || process.env.APP_URL || "http://localhost:3000").replace(/\/$/, ""),
   googleClientId: () => req("GOOGLE_CLIENT_ID"),
   googleClientSecret: () => req("GOOGLE_CLIENT_SECRET"),
   pubsubTopic: () => process.env.GMAIL_PUBSUB_TOPIC ?? "",
