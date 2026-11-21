@@ -11,13 +11,14 @@ import { agentTablesReady, getChecklist, intakePrompt, quoteForThread, recordInt
 
 // The key comes from ANTHROPIC_API_KEY, cleaned of quotes, spaces and line breaks a paste can add. Passing it
 // (and the address) explicitly means a stray ANTHROPIC_AUTH_TOKEN or ANTHROPIC_BASE_URL in Vercel can't take over.
-// One retry: drafting runs inside a time-limited Vercel function, so a slow call must not use up the whole run
-// (the SDK's default is a 10 minute timeout with 2 retries).
+// No automatic retries: the SDK would also retry a call that timed out, and Anthropic still bills the
+// first one, so a slow draft cost twice. ask() retries once itself, only when nothing was charged
+// (rate limit, overload, server error, dropped connection).
 const apiKey = cleanApiKey(process.env.ANTHROPIC_API_KEY);
 const client = new Anthropic({
   ...(apiKey ? { apiKey } : {}),
   baseURL: "https://api.anthropic.com",
-  maxRetries: 1,
+  maxRetries: 0,
 });
 
 /** Longest a single Claude call may take before it's given up (and shown with a Retry button). */
@@ -26,6 +27,26 @@ const CALL_TIMEOUT_MS = 150_000;
 const MIN_TIME_FOR_A_DRAFT_MS = 100_000;
 /** Drafts written at the same time. */
 const DRAFT_CONCURRENCY = 3;
+
+// How much each draft sends to Claude. Every draft is billed for all of it, so these are kept to what a
+// good reply needs: a few recent examples of Leonel's writing, the last few emails with the client and
+// the client's own projects.
+/** Leonel's saved replies used as style examples (newest first). */
+const STYLE_EXAMPLES = 6;
+const STYLE_CONTEXT_CHARS = 600;
+const STYLE_REPLY_CHARS = 1500;
+/** Earlier emails with the same client, from other threads (newest first). */
+const EARLIER_EMAILS = 5;
+const EARLIER_EMAIL_CHARS = 1500;
+/** Messages of the current thread; the newest is sent in full, older ones shortened. */
+const THREAD_MESSAGES = 8;
+const LATEST_EMAIL_CHARS = 6000;
+const OLDER_THREAD_EMAIL_CHARS = 2000;
+/** Open projects of other clients, only sent when the email has no project to go on. */
+const OTHER_PROJECTS = 15;
+const PROJECT_NOTES_CHARS = 500;
+/** Room for Claude's thinking plus the reply and quote details. */
+const MAX_TOKENS = 8000;
 
 export const SIGNATURE = "Leonel\nThe Event Rental Guys";
 
@@ -92,9 +113,13 @@ interface EmailRow {
   sent_at: string;
 }
 
-function fmtEmail(e: EmailRow) {
+function clip(text: string, max: number) {
+  return text.length > max ? `${text.slice(0, max)} […]` : text;
+}
+
+function fmtEmail(e: EmailRow, maxChars: number) {
   const who = e.direction === "outbound" ? "Leonel" : e.from_name || e.from_address || "Client";
-  return `--- ${e.direction === "outbound" ? "SENT BY" : "FROM"} ${who} · ${new Date(e.sent_at).toUTCString()}\nSubject: ${e.subject ?? ""}\n${(e.body ?? "").slice(0, 6000)}`;
+  return `--- ${e.direction === "outbound" ? "SENT BY" : "FROM"} ${who} · ${new Date(e.sent_at).toUTCString()}\nSubject: ${e.subject ?? ""}\n${clip(e.body ?? "", maxChars)}`;
 }
 
 /**
@@ -107,7 +132,14 @@ async function buildContext(emailId: string, accountId: string) {
   ) as EmailRow;
   const acct = accountId;
   const [thread, clientRows, otherEmails, projects, styles] = await Promise.all([
-    db().from("emails").select("*").eq("account_id", acct).eq("gmail_thread_id", email.gmail_thread_id).lte("sent_at", email.sent_at).order("sent_at"),
+    db()
+      .from("emails")
+      .select("*")
+      .eq("account_id", acct)
+      .eq("gmail_thread_id", email.gmail_thread_id)
+      .lte("sent_at", email.sent_at)
+      .order("sent_at", { ascending: false })
+      .limit(THREAD_MESSAGES),
     email.client_id
       ? db().from("clients").select("*").eq("account_id", acct).eq("id", email.client_id)
       : Promise.resolve({ data: [], error: null }),
@@ -119,7 +151,7 @@ async function buildContext(emailId: string, accountId: string) {
           .eq("client_id", email.client_id)
           .neq("gmail_thread_id", email.gmail_thread_id)
           .order("sent_at", { ascending: false })
-          .limit(15)
+          .limit(EARLIER_EMAILS)
       : Promise.resolve({ data: [], error: null }),
     // Shared projects: only those visible through THIS account (never another account's projects).
     visibleProjectIds([acct]).then(async (ids) =>
@@ -133,7 +165,7 @@ async function buildContext(emailId: string, accountId: string) {
             .limit(60)
         : { data: [], error: null },
     ),
-    db().from("style_examples").select("context,body").eq("account_id", acct).order("created_at", { ascending: false }).limit(15),
+    db().from("style_examples").select("context,body").eq("account_id", acct).order("created_at", { ascending: false }).limit(STYLE_EXAMPLES),
   ]);
 
   const c = (clientRows.data as Record<string, string | null>[])[0];
@@ -145,24 +177,38 @@ async function buildContext(emailId: string, accountId: string) {
     linked = (must(await db().from("projects").select("*").eq("id", email.project_id)) as P[])[0];
   }
   const clientProjects = allProjects.filter((p) => p.client_id === email.client_id);
-  const otherProjects = allProjects.filter((p) => p.client_id !== email.client_id);
-  const fmtP = (p: P) =>
-    `#${p.project_number} — ${p.project_name} (status: ${p.status}${p.event_date ? `, event date ${p.event_date}` : ""})${p.notes ? `\n  notes: ${p.notes}` : ""}`;
+  // Other clients' projects only help when there's nothing else to match the email to (a new sender
+  // writing about an existing booking); then a short list, without notes, is enough.
+  const otherProjects =
+    linked || clientProjects.length ? [] : allProjects.filter((p) => p.client_id !== email.client_id).slice(0, OTHER_PROJECTS);
+  const fmtP = (p: P, withNotes = true) =>
+    `#${p.project_number} — ${p.project_name} (status: ${p.status}${p.event_date ? `, event date ${p.event_date}` : ""})${withNotes && p.notes ? `\n  notes: ${clip(p.notes, PROJECT_NOTES_CHARS)}` : ""}`;
 
   const styleText = ((styles.data ?? []) as { context: string | null; body: string }[])
-    .map((s, i) => `<example ${i + 1}>${s.context ? `\nClient wrote: ${s.context.slice(0, 1500)}` : ""}\nLeonel replied:\n${s.body.slice(0, 3000)}\n</example ${i + 1}>`)
+    .map(
+      (s, i) =>
+        `<example ${i + 1}>${s.context ? `\nClient wrote: ${clip(s.context, STYLE_CONTEXT_CHARS)}` : ""}\nLeonel replied:\n${clip(s.body, STYLE_REPLY_CHARS)}\n</example ${i + 1}>`,
+    )
+    .join("\n\n");
+  // The same for every draft of this inbox, so it's sent as a cached part of the system prompt (see ask()).
+  const styleBlock = `<style_examples>\n${styleText || "(none saved yet)"}\n</style_examples>`;
+
+  const threadRows = ((thread.data ?? []) as EmailRow[]).reverse(); // oldest first
+  const threadText = threadRows
+    .map((e, i) => fmtEmail(e, i === threadRows.length - 1 ? LATEST_EMAIL_CHARS : OLDER_THREAD_EMAIL_CHARS))
     .join("\n\n");
 
   const parts = [
-    `<style_examples>\n${styleText || "(none saved yet)"}\n</style_examples>`,
     `<client>\nName: ${c?.name ?? "unknown"}\nEmail: ${c?.email ?? email.from_address}\nCompany: ${c?.company ?? ""}\nPhone: ${c?.phone ?? ""}\nNotes: ${c?.notes ?? ""}\n</client>`,
     `<linked_project>\n${linked ? fmtP(linked) : "(not linked to a project yet)"}\n</linked_project>`,
-    `<this_clients_projects>\n${clientProjects.map(fmtP).join("\n") || "(none)"}\n</this_clients_projects>`,
-    `<other_open_projects>\n${otherProjects.slice(0, 40).map(fmtP).join("\n") || "(none)"}\n</other_open_projects>`,
-    `<earlier_conversations_with_this_client>\n${((otherEmails.data ?? []) as EmailRow[]).reverse().map(fmtEmail).join("\n\n") || "(none)"}\n</earlier_conversations_with_this_client>`,
-    `<current_thread>\n${((thread.data ?? []) as EmailRow[]).map(fmtEmail).join("\n\n")}\n</current_thread>`,
+    `<this_clients_projects>\n${clientProjects.map((p) => fmtP(p)).join("\n") || "(none)"}\n</this_clients_projects>`,
+    ...(otherProjects.length
+      ? [`<other_open_projects>\n${otherProjects.map((p) => fmtP(p, false)).join("\n")}\n</other_open_projects>`]
+      : []),
+    `<earlier_conversations_with_this_client>\n${((otherEmails.data ?? []) as EmailRow[]).reverse().map((e) => fmtEmail(e, EARLIER_EMAIL_CHARS)).join("\n\n") || "(none)"}\n</earlier_conversations_with_this_client>`,
+    `<current_thread>\n${threadText}\n</current_thread>`,
   ];
-  return { email, context: parts.join("\n\n"), projects: allProjects };
+  return { email, context: parts.join("\n\n"), styleBlock, projects: allProjects };
 }
 
 function ensureSignature(text: string) {
@@ -179,23 +225,49 @@ async function replyRules(): Promise<string> {
     : "";
 }
 
+/** Errors where Anthropic didn't charge for the call, so one more try costs nothing extra. */
+function freeToRetry(e: unknown) {
+  if (e instanceof Anthropic.APIConnectionTimeoutError) return false; // the timed-out call may still be billed
+  return (
+    e instanceof Anthropic.RateLimitError ||
+    e instanceof Anthropic.InternalServerError ||
+    e instanceof Anthropic.APIConnectionError ||
+    (e instanceof Anthropic.APIError && e.status === 529)
+  );
+}
+
+/**
+ * One structured call to Claude. `shared` is text that is the same for many calls in a row (an inbox's
+ * style examples): it goes at the end of the system prompt, which is cached, so the calls after the
+ * first one pay about a tenth for it (Anthropic keeps the cache for 5 minutes).
+ */
 export async function ask<T extends z.ZodType>(
   schema: T,
   messages: Anthropic.Beta.BetaMessageParam[],
   deadline?: number,
   systemPrompt?: string,
+  shared?: string,
 ): Promise<z.infer<T>> {
-  const system = systemPrompt ?? SYSTEM + (await replyRules());
-  const timeout = deadline ? Math.max(30_000, Math.min(CALL_TIMEOUT_MS, deadline - Date.now())) : CALL_TIMEOUT_MS;
-  const res = await client.beta.messages.parse({
-    model: env.anthropicModel(),
-    max_tokens: 16000,
-    betas: ["server-side-fallback-2026-07-01"],
-    fallbacks: "default", // if the model declines, Anthropic retries on its recommended fallback model
-    output_config: { effort: "medium", format: betaZodOutputFormat(schema) },
-    system,
-    messages,
-  }, { timeout }).catch((e: unknown) => {
+  const systemText = (systemPrompt ?? SYSTEM + (await replyRules())) + (shared ? `\n\n${shared}` : "");
+  const timeoutFor = () => (deadline ? Math.max(30_000, Math.min(CALL_TIMEOUT_MS, deadline - Date.now())) : CALL_TIMEOUT_MS);
+  const call = () =>
+    client.beta.messages.parse(
+      {
+        model: env.anthropicModel(),
+        max_tokens: MAX_TOKENS,
+        betas: ["server-side-fallback-2026-07-01"],
+        fallbacks: "default", // if the model declines, Anthropic retries on its recommended fallback model
+        output_config: { effort: env.anthropicEffort(), format: betaZodOutputFormat(schema) },
+        system: [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }],
+        messages,
+      },
+      { timeout: timeoutFor() },
+    );
+  const res = await call().catch(async (e: unknown) => {
+    if (!freeToRetry(e) || (deadline && deadline - Date.now() < 60_000)) throw e;
+    await new Promise((r) => setTimeout(r, 3000));
+    return call();
+  }).catch((e: unknown) => {
     if (e instanceof Anthropic.APIConnectionTimeoutError) throw new Error("Claude took too long to write this draft. Tap Retry.");
     if (e instanceof Anthropic.AuthenticationError) throw new Error(describeRefusedKey(process.env.ANTHROPIC_API_KEY));
     if (e instanceof Anthropic.PermissionDeniedError)
@@ -227,7 +299,7 @@ export async function generateDraft(accountId: string, emailId: string, deadline
     .limit(1);
   if (open.data?.length) return;
   try {
-    const { context, projects, email } = await buildContext(emailId, accountId);
+    const { context, styleBlock, projects, email } = await buildContext(emailId, accountId);
     const agent = await agentTablesReady(accountId).catch(() => false);
     const checklist = agent ? await getChecklist() : [];
     const quote = agent ? await quoteForThread(accountId, email.gmail_thread_id) : null;
@@ -237,8 +309,8 @@ export async function generateDraft(accountId: string, emailId: string, deadline
       (instruction ? `The team asked for this reply: ${instruction}\n\n` : "") +
       `Draft Leonel's reply to the latest client email in <current_thread>.`;
     const out = agent
-      ? await ask(DraftWithQuoteSchema, [{ role: "user", content }], deadline)
-      : { ...(await ask(DraftSchema, [{ role: "user", content }], deadline)), quote: null };
+      ? await ask(DraftWithQuoteSchema, [{ role: "user", content }], deadline, undefined, styleBlock)
+      : { ...(await ask(DraftSchema, [{ role: "user", content }], deadline, undefined, styleBlock)), quote: null };
     const num = out.suggested_project_number?.replace(/^#/, "").trim();
     const suggested = num ? projects.find((p) => p.project_number === num) : undefined;
     const ins = await db().from("drafts").insert({
@@ -307,7 +379,7 @@ export async function reviseDraft(actor: string, accountId: string, draftId: str
   const history = must(
     await db().from("draft_messages").select("role,content").in("draft_id", versions.map((v) => v.id)).order("created_at"),
   ) as { role: "user" | "assistant"; content: string }[];
-  const { context } = await buildContext(draft.email_id, accountId);
+  const { context, styleBlock } = await buildContext(draft.email_id, accountId);
   const body = currentBody ?? draft.body;
 
   const out = await ask(ReviseSchema, [
@@ -320,7 +392,7 @@ export async function reviseDraft(actor: string, accountId: string, draftId: str
           : "") +
         `<current_draft>\n${body}\n</current_draft>\n\nThe team's request: ${instruction}\n\nRewrite the draft accordingly. Keep everything they didn't ask to change.`,
     },
-  ]);
+  ], undefined, undefined, styleBlock);
 
   const newBody = ensureSignature(out.reply);
   const newId = await newDraftVersion(draftId, newBody, "claude", instruction);
