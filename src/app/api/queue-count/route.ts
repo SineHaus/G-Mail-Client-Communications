@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { listAccounts } from "@/lib/accounts";
 import { requireMember } from "@/lib/team";
 import { syncHistory } from "@/lib/ingest";
+import { recordSyncError } from "@/lib/sync-health";
 import { draftDeadline, draftMissing, findUndraftedEmails } from "@/lib/draft-queue";
 
 export const dynamic = "force-dynamic";
@@ -64,6 +65,7 @@ export async function GET() {
           await draftMissing(a.id, deadline, draftEmailIds);
         } catch (e) {
           console.error("catch-up sync failed", a.email_address, e);
+          await recordSyncError(a.id, "check", e);
         }
       }
     });

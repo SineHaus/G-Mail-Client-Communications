@@ -1,4 +1,5 @@
 import "server-only";
+import { isRejectedSignIn } from "./sync-health-rule";
 import { db, must } from "./db";
 import { env } from "./env";
 import type { GmailMessage } from "./email-parse";
@@ -218,10 +219,14 @@ async function accessToken(accountId: string): Promise<string> {
     tokenCache.set(accountId, { token: t.access_token, expiresAt: Date.now() + t.expires_in * 1000 });
     return t.access_token;
   } catch (e) {
-    await db()
-      .from("gmail_accounts")
-      .update({ last_error: `Google rejected the saved sign-in; reconnect this account. (${e instanceof Error ? e.message.slice(0, 200) : e})` })
-      .eq("id", accountId);
+    // Only a sign-in Google actually rejected needs a reconnect (and stops the automatic checks).
+    // A passing outage or network error is just a failed check; the next one tries again.
+    if (isRejectedSignIn(e)) {
+      await db()
+        .from("gmail_accounts")
+        .update({ last_error: `Google rejected the saved sign-in; reconnect this account. (${e instanceof Error ? e.message.slice(0, 200) : e})` })
+        .eq("id", accountId);
+    }
     throw e;
   }
 }

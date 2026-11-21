@@ -2,6 +2,7 @@ import { after, NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { syncHistory } from "@/lib/ingest";
+import { recordSyncError } from "@/lib/sync-health";
 import { draftDeadline, draftMissing } from "@/lib/draft-queue";
 
 export const maxDuration = 300;
@@ -41,6 +42,7 @@ export async function POST(req: NextRequest) {
       await draftMissing(accountId, draftDeadline(startedAt, maxDuration), draftEmailIds);
     } catch (e) {
       console.error("webhook sync failed", emailAddress, e);
+      await recordSyncError(accountId, "push", e);
     }
   });
   return new NextResponse(null, { status: 204 });

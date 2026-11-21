@@ -15,6 +15,7 @@ import { generateDraft, reviseDraft } from "@/lib/claude";
 import { draftDeadline, draftMissing } from "@/lib/draft-queue";
 import { newDraftVersion } from "@/lib/drafts";
 import { syncHistory, syncRecent } from "@/lib/ingest";
+import { recordSyncError } from "@/lib/sync-health";
 import { startWatch } from "@/lib/watch";
 import { disconnectAccount, gmailFor, getAccount } from "@/lib/google";
 import { extractBody, header, stripQuoted } from "@/lib/email-parse";
@@ -332,7 +333,10 @@ export async function syncNowAction(accountId?: string) {
     // An inbox with nothing stored yet (e.g. everything was skipped on its first import) gets the
     // 14-day import again; already-stored messages are skipped, so this is safe to repeat.
     const stored = await db().from("emails").select("id", { count: "exact", head: true }).eq("account_id", acct);
-    const { draftEmailIds, results, stoppedEarly } = stored.count ? await syncHistory(acct) : await syncRecent(acct);
+    const { draftEmailIds, results, stoppedEarly } = await (stored.count ? syncHistory(acct) : syncRecent(acct)).catch(async (e: unknown) => {
+      await recordSyncError(acct, "Sync now", e);
+      throw e;
+    });
     // Server actions here run under the page's maxDuration (300 s); what doesn't fit is drafted on the next check.
     const { drafted, waiting } = await draftMissing(acct, draftDeadline(startedAt, 300), draftEmailIds);
     return {

@@ -6,6 +6,7 @@ import { GOODSHUFFLE_WISH_LIST_SKIP, extractBody, header, inboundContact, listAt
 import { attachmentsColumnReady } from "./schema-ready";
 import { saveWishlistNotice } from "./goodshuffle-link";
 import { audit } from "./audit";
+import { clearSyncError } from "./sync-health";
 
 // Every function here works on ONE Gmail account and scopes every query by account_id.
 
@@ -299,6 +300,7 @@ export async function syncRecent(accountId: string, days = 14, max = 150) {
       last_error: null,
     })
     .eq("id", accountId);
+  await clearSyncError(accountId).catch(() => {});
   return { results, stoppedEarly, draftEmailIds: await pickDraftCandidates(accountId, results) };
 }
 
@@ -324,5 +326,6 @@ export async function syncHistory(accountId: string) {
     // Cut short by the rate limit: keep the old history_id so the next check picks up the rest.
     .update({ history_id: stoppedEarly ? acct.history_id : added.historyId, last_synced_at: new Date().toISOString(), last_error: null })
     .eq("id", accountId);
+  await clearSyncError(accountId).catch(() => {});
   return { results, stoppedEarly, draftEmailIds: await pickDraftCandidates(accountId, results) };
 }

@@ -4,6 +4,7 @@ import { exchangeCode, exchangeLoginCode, getAccount, saveAccountToken } from "@
 import { findMember, memberForSignIn } from "@/lib/team";
 import { audit } from "@/lib/audit";
 import { syncRecent } from "@/lib/ingest";
+import { recordSyncError } from "@/lib/sync-health";
 import { draftDeadline, draftMissing } from "@/lib/draft-queue";
 import { startWatch } from "@/lib/watch";
 import { catchUpReadInGmail, setReadSyncNeedsReconnect } from "@/lib/read-sync";
@@ -110,6 +111,7 @@ async function finishSignIn(
         await draftMissing(accountId, draftDeadline(startedAt, maxDuration), draftEmailIds);
       } catch (e) {
         console.error("Initial sync failed", email, e);
+        await recordSyncError(accountId, "first import", e);
       }
     });
   }
