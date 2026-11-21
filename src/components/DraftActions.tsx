@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useState, useTransition } from "react";
+import { useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 import { approveDraftAction, declineDraftAction, regenerateDraftAction } from "@/app/actions";
 
@@ -19,6 +19,7 @@ export default function DraftActions({
   canEdit,
   canApprove,
   onDone,
+  extra,
 }: {
   draftId: string;
   to: string;
@@ -30,6 +31,7 @@ export default function DraftActions({
   canEdit: boolean;
   canApprove: boolean;
   onDone?: () => void; // after a send or decline (the thread panel reloads)
+  extra?: ReactNode; // another button at the end of the row (e.g. Start building in Goodshuffle Pro)
 }) {
   const router = useRouter();
   const [confirming, setConfirming] = useState(false);
@@ -59,6 +61,7 @@ export default function DraftActions({
         <button className="btn-danger" disabled={pending} onClick={() => start(async () => finish(await declineDraftAction(draftId)))}>
           Decline
         </button>
+        {extra}
         {error && <span className="text-xs text-red-700">{error}</span>}
       </div>
     );
@@ -104,6 +107,7 @@ export default function DraftActions({
             </button>
           </>
         )}
+        {extra}
       </div>
       {error && <p className="text-xs text-red-700">{error}</p>}
     </div>

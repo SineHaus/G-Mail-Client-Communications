@@ -3,7 +3,10 @@ import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { markReadyForGoodshuffleAction } from "@/app/actions";
 
-/** Puts a conversation in the approval queue to become a Goodshuffle Pro project. Sends nothing. */
+/**
+ * Start building in Goodshuffle Pro: puts the conversation in the approval queue (Today → Waiting on you) to become
+ * a Goodshuffle Pro project. Sends nothing to the customer and creates nothing in Goodshuffle.
+ */
 export default function ReadyForGoodshuffleButton({ emailId }: { emailId: string }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -12,9 +15,9 @@ export default function ReadyForGoodshuffleButton({ emailId }: { emailId: string
     <>
       <button
         type="button"
-        className="t-btn"
+        className="btn-brand"
         disabled={pending}
-        title="Put it in the approval queue to become a Goodshuffle project. Nothing is sent."
+        title="Puts it in the approval queue to become a Goodshuffle Pro project. Nothing is sent and nothing is created in Goodshuffle."
         onClick={() =>
           start(async () => {
             setError(null);
@@ -24,7 +27,7 @@ export default function ReadyForGoodshuffleButton({ emailId }: { emailId: string
           })
         }
       >
-        {pending ? "Marking…" : "Ready for Goodshuffle"}
+        {pending ? "Starting…" : "Start building in Goodshuffle Pro"}
       </button>
       {error && <span className="text-xs text-red-700">{error}</span>}
     </>
